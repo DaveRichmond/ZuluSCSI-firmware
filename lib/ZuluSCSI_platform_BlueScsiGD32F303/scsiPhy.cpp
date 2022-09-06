@@ -13,6 +13,8 @@ extern "C" {
 #include <scsi2sd_time.h>
 }
 
+static void init_irqs();
+
 /***********************/
 /* SCSI status signals */
 /***********************/
@@ -113,6 +115,7 @@ extern "C" void scsiPhyReset(void)
      * For SCSI-1 single-initiator support, also call:
      * scsi_bsy_deassert_interrupt() on falling edge of SEL pin
      */
+    init_irqs();
 }
 
 /************************/
@@ -289,4 +292,51 @@ extern "C" void scsiRead(uint8_t* data, uint32_t count, int* parityError)
     }
 
     scsiLogDataOut(data, count);
+}
+
+// Interrupt Handlers
+extern "C"
+void SCSI_RST_IRQ(void){
+    if(exti_interrupt_flag_get(SCSI_RST_EXTI)){
+        exti_interrupt_flag_clear(SCSI_RST_EXTI);
+        scsi_rst_assert_interrupt();
+    }
+    if(exti_interrupt_flag_get(SCSI_BSY_EXTI)){
+        exti_interrupt_flag_clear(SCSI_BSY_EXTI);
+        scsi_bsy_deassert_interrupt();
+    }
+    if(exti_interrupt_flag_get(SCSI_SEL_EXTI)){
+        exti_interrupt_flag_clear(SCSI_SEL_EXTI);
+        scsi_bsy_deassert_interrupt();
+    }
+}
+
+extern "C"
+void SCSI_BSY_IRQ(void){
+    SCSI_RST_IRQ();
+}
+
+// extern "C"
+// void SCSI_SEL_IRQ(void){
+//     SCSI_RST_IRQ();
+// }
+
+static void init_irqs(){
+    // Falling edge of RST
+    gpio_exti_source_select(SCSI_RST_EXTI_SOURCE_PORT, SCSI_RST_EXTI_SOURCE_PIN);
+    exti_init(SCSI_RST_EXTI, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    NVIC_SetPriority(SCSI_RST_IRQn, 1);
+    NVIC_EnableIRQ(SCSI_RST_IRQn);
+
+    // Rising edge of BSY
+    gpio_exti_source_select(SCSI_BSY_EXTI_SOURCE_PORT, SCSI_BSY_EXTI_SOURCE_PIN);
+    exti_init(SCSI_BSY_EXTI, EXTI_INTERRUPT, EXTI_TRIG_RISING);
+    NVIC_SetPriority(SCSI_BSY_IRQn, 1);
+    NVIC_EnableIRQ(SCSI_BSY_IRQn);
+
+    // Falling edge of SEL
+    gpio_exti_source_select(SCSI_SEL_EXTI_SOURCE_PORT, SCSI_SEL_EXTI_SOURCE_PIN);
+    exti_init(SCSI_SEL_EXTI, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    NVIC_SetPriority(SCSI_SEL_IRQn, 1);
+    NVIC_EnableIRQ(SCSI_SEL_IRQn);
 }
