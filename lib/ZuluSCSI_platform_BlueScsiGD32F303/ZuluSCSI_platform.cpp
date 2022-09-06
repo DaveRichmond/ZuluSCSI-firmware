@@ -107,22 +107,23 @@ void azplatform_init()
     rcu_periph_clock_enable(RCU_GPIOA);
     rcu_periph_clock_enable(RCU_GPIOB);
     rcu_periph_clock_enable(RCU_GPIOC);
+    rcu_periph_clock_enable(RCU_USART1);
 
     SCSI_RELEASE_OUTPUTS();
-    gpio_init(SCSI_OUT_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_DATA_MASK | SCSI_OUT_REQ);
-    gpio_init(SCSI_OUT_IO_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_IO_PIN);
-    gpio_init(SCSI_OUT_CD_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_CD_PIN);
-    gpio_init(SCSI_OUT_SEL_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_SEL_PIN);
-    gpio_init(SCSI_OUT_MSG_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_MSG_PIN);
-    gpio_init(SCSI_OUT_RST_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_RST_PIN);
-    gpio_init(SCSI_OUT_BSY_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_MAX, SCSI_OUT_BSY_PIN);
+    gpio_init(SCSI_OUT_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_DATA_MASK | SCSI_OUT_REQ);
+    gpio_init(SCSI_OUT_IO_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_IO_PIN);
+    gpio_init(SCSI_OUT_CD_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_CD_PIN);
+    gpio_init(SCSI_OUT_SEL_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_SEL_PIN);
+    gpio_init(SCSI_OUT_MSG_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_MSG_PIN);
+    gpio_init(SCSI_OUT_RST_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_RST_PIN);
+    gpio_init(SCSI_OUT_BSY_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_BSY_PIN);
 
     //gpio_init(SCSI_IN_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_IN_MASK);
     gpio_init(SCSI_ATN_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_ATN_PIN);
-    gpio_init(SCSI_BSY_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_BSY_PIN);
-    gpio_init(SCSI_SEL_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_SEL_PIN);
+    //gpio_init(SCSI_BSY_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_BSY_PIN);
+    //gpio_init(SCSI_SEL_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_SEL_PIN);
     gpio_init(SCSI_ACK_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_ACK_PIN);
-    gpio_init(SCSI_RST_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_RST_PIN);
+    //gpio_init(SCSI_RST_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_RST_PIN);
 
     // SD Card on SPI
     gpio_init(SD_PORT, GPIO_MODE_OUT_PP, GPIO_OSPEED_MAX, SD_CS_PIN);
@@ -134,7 +135,18 @@ void azplatform_init()
 
     // LED pins
     gpio_bit_set(LED_PORT, LED_PIN);
-    gpio_init(LED_PORT, GPIO_MODE_OUT_PP, GPIO_OSPEED_2MHZ, LED_PIN);
+    gpio_init(LED_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_2MHZ, LED_PIN);
+
+    // Initialise PA2 for Logging USART1(TX Only)
+    gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_MAX, GPIO_PIN_2);
+    usart_enable(USART1);
+    usart_word_length_set(USART1, USART_WL_8BIT);
+    usart_stop_bit_set(USART1, USART_STB_1BIT);
+    usart_baudrate_set(USART1, 115200);
+    usart_transmit_config(USART1, USART_TRANSMIT_ENABLE);
+    usart_receive_config(USART1, USART_RECEIVE_DISABLE);
+    while(usart_flag_get(USART1, USART_FLAG_TBE) == RESET);
+    // have I missed anything else?
 }
 
 void azplatform_late_init()
@@ -285,8 +297,15 @@ static void watchdog_handler(uint32_t *sp){
 // This function is called for every log message.
 // It can e.g. write the log to serial port in real time.
 // It can also be left empty to use only the debug log file on SD card.
-void azplatform_log(const char *s)
-{
+static void azplatform_uart_sendchar(char c){
+    while(usart_flag_get(USART1, USART_FLAG_TC) == RESET);
+    usart_data_transmit(USART1, (uint32_t)c);
+}
+void azplatform_log(const char *s){
+    while(*s){
+        if((char)*s == '\n') azplatform_uart_sendchar('\r');
+        azplatform_uart_sendchar(*s++);
+    }
 }
 
 // This function can be used to periodically reset watchdog timer for crash handling.

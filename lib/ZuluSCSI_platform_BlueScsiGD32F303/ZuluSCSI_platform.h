@@ -8,6 +8,7 @@
 /* Add any platform-specific includes you need here */
 #include <gd32f30x.h>
 #include <gd32f30x_gpio.h>
+#include <gd32f30x_usart.h>
 #include <stdint.h>
 #include <scsi2sd.h>
 #include "ZuluSCSI_platform_gpio.h"
