@@ -101,13 +101,16 @@ void azplatform_init()
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // No SWO, debug output somehow?
-
-    //rcu_periph_clock_enable(RCU_AF);
+    rcu_periph_clock_enable(RCU_AF);
     rcu_periph_clock_enable(RCU_GPIOA);
     rcu_periph_clock_enable(RCU_GPIOB);
     rcu_periph_clock_enable(RCU_GPIOC);
     rcu_periph_clock_enable(RCU_USART1);
+
+    // switch debug interface to SWD only, as we're 
+    // using some of the pins attached to 4 wire JTAG
+    // as GPIOs
+    gpio_pin_remap_config(GPIO_SWJ_SWDPENABLE_REMAP, ENABLE);
 
     SCSI_RELEASE_OUTPUTS();
     gpio_init(SCSI_OUT_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_DATA_MASK | SCSI_OUT_REQ);
@@ -119,11 +122,11 @@ void azplatform_init()
     gpio_init(SCSI_OUT_BSY_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, SCSI_OUT_BSY_PIN);
 
     //gpio_init(SCSI_IN_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_IN_MASK);
-    gpio_init(SCSI_ATN_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_ATN_PIN);
-    //gpio_init(SCSI_BSY_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_BSY_PIN);
-    //gpio_init(SCSI_SEL_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_SEL_PIN);
-    gpio_init(SCSI_ACK_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_ACK_PIN);
-    //gpio_init(SCSI_RST_PORT, GPIO_MODE_IN_FLOATING, 0, SCSI_RST_PIN);
+    gpio_init(SCSI_ATN_PORT, GPIO_MODE_IPU, 0, SCSI_ATN_PIN);
+    //gpio_init(SCSI_BSY_PORT, GPIO_MODE_IPU, 0, SCSI_BSY_PIN);
+    //gpio_init(SCSI_SEL_PORT, GPIO_MODE_IPU, 0, SCSI_SEL_PIN);
+    gpio_init(SCSI_ACK_PORT, GPIO_MODE_IPU, 0, SCSI_ACK_PIN);
+    //gpio_init(SCSI_RST_PORT, GPIO_MODE_IPU, 0, SCSI_RST_PIN);
 
     // SD Card on SPI
     gpio_init(SD_PORT, GPIO_MODE_OUT_PP, GPIO_OSPEED_MAX, SD_CS_PIN);
@@ -135,7 +138,7 @@ void azplatform_init()
 
     // LED pins
     gpio_bit_set(LED_PORT, LED_PIN);
-    gpio_init(LED_PORT, GPIO_MODE_OUT_OD, GPIO_OSPEED_2MHZ, LED_PIN);
+    gpio_init(LED_PORT, GPIO_MODE_OUT_PP, GPIO_OSPEED_2MHZ, LED_PIN);
 
     // Initialise PA2 for Logging USART1(TX Only)
     gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_MAX, GPIO_PIN_2);

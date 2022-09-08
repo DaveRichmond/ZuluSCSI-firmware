@@ -59,7 +59,14 @@
 #define SCSI_ACK_PIN  GPIO_PIN_10
 #define SCSI_ATN_PORT GPIOA
 #define SCSI_ATN_PIN  GPIO_PIN_8
-
+#define SCSI_REQ_PORT SCSI_IN_PORT
+#define SCSI_REQ_PIN  SCSI_OUT_REQ
+#define SCSI_MSG_PORT SCSI_OUT_MSG_PORT
+#define SCSI_MSG_PIN  SCSI_OUT_MSG_PIN
+#define SCSI_CD_PORT  SCSI_OUT_CD_PORT
+#define SCSI_CD_PIN   SCSI_OUT_CD_PIN
+#define SCSI_IO_PORT  SCSI_OUT_IO_PORT
+#define SCSI_IO_PIN   SCSI_OUT_IO_PIN
 
 // RST pin uses EXTI interrupt
 #define SCSI_RST_PORT GPIOA
@@ -80,13 +87,13 @@
 #define SCSI_BSY_IRQn EXTI5_9_IRQn
 
 // SEL pin uses EXTI interrupt
-#define SCSI_SEL_PORT GPIOB
-#define SCSI_SEL_PIN  GPIO_PIN_7
-#define SCSI_SEL_EXTI EXTI_7
+#define SCSI_SEL_PORT SCSI_OUT_SEL_PORT
+#define SCSI_SEL_PIN  SCSI_OUT_SEL_PIN
+#define SCSI_SEL_EXTI EXTI_4
 #define SCSI_SEL_EXTI_SOURCE_PORT GPIO_PORT_SOURCE_GPIOB
-#define SCSI_SEL_EXTI_SOURCE_PIN GPIO_PIN_SOURCE_7
-#define SCSI_SEL_IRQ EXTI5_9_IRQHandler
-#define SCSI_SEL_IRQn EXTI5_9_IRQn
+#define SCSI_SEL_EXTI_SOURCE_PIN GPIO_PIN_SOURCE_4
+#define SCSI_SEL_IRQ EXTI4_IRQHandler
+#define SCSI_SEL_IRQn EXTI4_IRQn
 
 #define SD_PORT     GPIOA
 #define SD_CS_PIN   GPIO_PIN_4
@@ -100,5 +107,5 @@
 // Status LED pins
 #define LED_PORT     GPIOB
 #define LED_PIN      GPIO_PIN_2
-#define LED_ON()     gpio_bit_reset(LED_PORT, LED_PIN)
-#define LED_OFF()    gpio_bit_set(LED_PORT, LED_PIN)
+#define LED_ON()     gpio_bit_set(LED_PORT, LED_PIN)
+#define LED_OFF()    gpio_bit_reset(LED_PORT, LED_PIN)

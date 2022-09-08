@@ -38,11 +38,15 @@ volatile uint8_t g_scsi_ctrl_bsy;
 
 void scsi_bsy_deassert_interrupt()
 {
+    // azdbg("SCSI BSY Interrupt BSY(", SCSI_IN(BSY), ") SEL(", SCSI_IN(SEL), ")");
     if (SCSI_IN(SEL) && !SCSI_IN(BSY))
     {
         // Check if any of the targets we simulate is selected
         uint8_t sel_bits = SCSI_IN_DATA();
         int sel_id = -1;
+
+        // azdbg("-- SCSI SEL BITS ", sel_bits);
+
         for (int i = 0; i < S2S_MAX_TARGETS; i++)
         {
             if (scsiDev.targets[i].targetId <= 7 && scsiDev.targets[i].cfg)
@@ -59,6 +63,8 @@ void scsi_bsy_deassert_interrupt()
         {
             uint8_t atn_flag = SCSI_IN(ATN) ? SCSI_STS_SELECTION_ATN : 0;
             g_scsi_sts_selection = SCSI_STS_SELECTION_SUCCEEDED | atn_flag | sel_id;
+            azdbg("-- SCSI Selected: ", sel_id);
+
         }
 
         // selFlag is required for Philips P2000C which releases it after 600ns
@@ -126,6 +132,8 @@ static SCSI_PHASE g_scsi_phase;
 
 extern "C" void scsiEnterPhase(int phase)
 {
+    //azdbg("SCSI: Enter Phase ", phase);
+    
     int delay = scsiEnterPhaseImmediate(phase);
     if (delay > 0)
     {
@@ -155,8 +163,11 @@ extern "C" uint32_t scsiEnterPhaseImmediate(int phase)
         else
         {
             SCSI_OUT(MSG, phase & __scsiphase_msg);
+            //DEBUG_PINS();
             SCSI_OUT(CD,  phase & __scsiphase_cd);
+            //DEBUG_PINS();
             SCSI_OUT(IO,  phase & __scsiphase_io);
+            //DEBUG_PINS();
 
             int delayNs = 400; // Bus settle delay
             if ((oldphase & __scsiphase_io) != (phase & __scsiphase_io))
@@ -186,6 +197,9 @@ void scsiEnterBusFree(void)
     g_scsi_sts_selection = 0;
     g_scsi_ctrl_bsy = 0;
     scsiDev.cdbLen = 0;
+    
+
+    //azdbg("SCSI: Enter Bus Free");
 
     SCSI_RELEASE_OUTPUTS();
 }
@@ -214,9 +228,13 @@ static inline void scsiWriteOneByte(uint8_t value)
     SCSI_OUT_DATA(value);
     delay_100ns(); // DB setup time before REQ
     SCSI_OUT(REQ, 1);
+    // DEBUG_PINS();
     SCSI_WAIT_ACTIVE(ACK);
+    // DEBUG_PINS();
     SCSI_RELEASE_DATA_REQ();
+    //DEBUG_PINS();
     SCSI_WAIT_INACTIVE(ACK);
+    //DEBUG_PINS(); 
 }
 
 extern "C" void scsiWriteByte(uint8_t value)
@@ -270,6 +288,7 @@ static inline uint8_t scsiReadOneByte(void)
     SCSI_OUT(REQ, 0);
     SCSI_WAIT_INACTIVE(ACK);
 
+    //azdbg("SCSI: Read One Byte ", r);
     return r;
 }
 
@@ -316,10 +335,10 @@ void SCSI_BSY_IRQ(void){
     SCSI_RST_IRQ();
 }
 
-// extern "C"
-// void SCSI_SEL_IRQ(void){
-//     SCSI_RST_IRQ();
-// }
+extern "C"
+void SCSI_SEL_IRQ(void){
+    SCSI_RST_IRQ();
+}
 
 static void init_irqs(){
     // Falling edge of RST
@@ -335,8 +354,8 @@ static void init_irqs(){
     NVIC_EnableIRQ(SCSI_BSY_IRQn);
 
     // Falling edge of SEL
-    gpio_exti_source_select(SCSI_SEL_EXTI_SOURCE_PORT, SCSI_SEL_EXTI_SOURCE_PIN);
-    exti_init(SCSI_SEL_EXTI, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
-    NVIC_SetPriority(SCSI_SEL_IRQn, 1);
-    NVIC_EnableIRQ(SCSI_SEL_IRQn);
+    //gpio_exti_source_select(SCSI_SEL_EXTI_SOURCE_PORT, SCSI_SEL_EXTI_SOURCE_PIN);
+    //exti_init(SCSI_SEL_EXTI, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    //NVIC_SetPriority(SCSI_SEL_IRQn, 1);
+    //NVIC_EnableIRQ(SCSI_SEL_IRQn);
 }
