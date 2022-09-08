@@ -228,13 +228,9 @@ static inline void scsiWriteOneByte(uint8_t value)
     SCSI_OUT_DATA(value);
     delay_100ns(); // DB setup time before REQ
     SCSI_OUT(REQ, 1);
-    // DEBUG_PINS();
     SCSI_WAIT_ACTIVE(ACK);
-    // DEBUG_PINS();
     SCSI_RELEASE_DATA_REQ();
-    //DEBUG_PINS();
     SCSI_WAIT_INACTIVE(ACK);
-    //DEBUG_PINS(); 
 }
 
 extern "C" void scsiWriteByte(uint8_t value)

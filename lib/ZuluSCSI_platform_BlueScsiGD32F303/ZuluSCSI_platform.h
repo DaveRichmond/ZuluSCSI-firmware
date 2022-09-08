@@ -73,7 +73,6 @@ void SysTick_Handle_PreEmptively();
 // Write a single SCSI pin.
 // Example use: SCSI_OUT(ATN, 1) sets SCSI_ATN to low (active) state.
 #define SCSI_OUT(pin, state) \
-    azdbg("SCSI OUT (" #pin ") -> ", state ? 1 : 0); \
     GPIO_BOP(SCSI_OUT_ ## pin ## _PORT) = (SCSI_OUT_ ## pin ## _PIN) << (state ? 16 : 0)
 
 // Read a single SCSI pin.
@@ -84,7 +83,6 @@ void SysTick_Handle_PreEmptively();
 // Write SCSI data bus, also sets REQ to inactive.
 extern const uint32_t g_scsi_out_byte_to_bop[256];
 #define SCSI_OUT_DATA(data) \
-    azdbg("SCSI OUT DATA ", data); \
     GPIO_BOP(SCSI_OUT_PORT) = g_scsi_out_byte_to_bop[(uint8_t)(data)]
 
 // Release SCSI data bus and REQ signal
