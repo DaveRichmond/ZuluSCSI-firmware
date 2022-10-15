@@ -85,14 +85,44 @@ public:
             m_israw = true;
             m_blockdev = SD.card();
 
-            if (m_endsector >= SD.card()->sectorCount())
+            uint32_t sectorCount = SD.card()->sectorCount();
+            if (m_endsector >= sectorCount)
             {
-                m_endsector = SD.card()->sectorCount() - 1;
+                azlog("Limiting RAW image mapping to SD card sector count: ", (int)sectorCount);
+                m_endsector = sectorCount - 1;
             }
         }
         else
         {
             m_fsfile = SD.open(filename, O_RDWR);
+
+            uint32_t sectorcount = m_fsfile.size() / SD_SECTOR_SIZE;
+            uint32_t begin = 0, end = 0;
+            if (m_fsfile.contiguousRange(&begin, &end) && end >= begin + sectorcount)
+            {
+                // Convert to raw mapping, this avoids some unnecessary
+                // access overhead in SdFat library.
+                m_israw = true;
+                m_blockdev = SD.card();
+                m_bgnsector = begin;
+
+                if (end != begin + sectorcount)
+                {
+                    uint32_t allocsize = end - begin + 1;
+                    azlog("---- NOTE: File ", filename, " has FAT allocated size of ", (int)allocsize, " sectors and file size of ", (int)sectorcount, " sectors");
+                    azlog("---- Due to issue #80 in ZuluSCSI version 1.0.8 and 1.0.9 the allocated size was mistakenly reported to SCSI controller.");
+                    azlog("---- If the drive was formatted using those versions, you may have problems accessing it with newer firmware.");
+                    azlog("---- The old behavior can be restored with setting  [SCSI] UseFATAllocSize = 1 in " CONFIGFILE);
+
+                    if (ini_getbool("SCSI", "UseFATAllocSize", 0, CONFIGFILE))
+                    {
+                        sectorcount = allocsize;
+                    }
+                }
+
+                m_endsector = begin + sectorcount - 1;
+                m_fsfile.close();
+            }
         }
     }
 
@@ -289,23 +319,49 @@ static void setDefaultDriveInfo(int target_idx)
 {
     image_config_t &img = g_DiskImages[target_idx];
 
-    static const char *driveinfo_fixed[4] = DRIVEINFO_FIXED;
+    static const char *driveinfo_fixed[4]     = DRIVEINFO_FIXED;
     static const char *driveinfo_removable[4] = DRIVEINFO_REMOVABLE;
-    static const char *driveinfo_optical[4] = DRIVEINFO_OPTICAL;
-    static const char *driveinfo_floppy[4] = DRIVEINFO_FLOPPY;
-    static const char *driveinfo_magopt[4] = DRIVEINFO_MAGOPT;
-    static const char *driveinfo_tape[4] = DRIVEINFO_TAPE;
+    static const char *driveinfo_optical[4]   = DRIVEINFO_OPTICAL;
+    static const char *driveinfo_floppy[4]    = DRIVEINFO_FLOPPY;
+    static const char *driveinfo_magopt[4]    = DRIVEINFO_MAGOPT;
+    static const char *driveinfo_tape[4]      = DRIVEINFO_TAPE;
+
+    static const char *apl_driveinfo_fixed[4]     = APPLE_DRIVEINFO_FIXED;
+    static const char *apl_driveinfo_removable[4] = APPLE_DRIVEINFO_REMOVABLE;
+    static const char *apl_driveinfo_optical[4]   = APPLE_DRIVEINFO_OPTICAL;
+    static const char *apl_driveinfo_floppy[4]    = APPLE_DRIVEINFO_FLOPPY;
+    static const char *apl_driveinfo_magopt[4]    = APPLE_DRIVEINFO_MAGOPT;
+    static const char *apl_driveinfo_tape[4]      = APPLE_DRIVEINFO_TAPE;
+
     const char **driveinfo = NULL;
 
-    switch (img.deviceType)
+    if (img.quirks == S2S_CFG_QUIRKS_APPLE)
     {
-        case S2S_CFG_FIXED:         driveinfo = driveinfo_fixed; break;
-        case S2S_CFG_REMOVEABLE:    driveinfo = driveinfo_removable; break;
-        case S2S_CFG_OPTICAL:       driveinfo = driveinfo_optical; break;
-        case S2S_CFG_FLOPPY_14MB:   driveinfo = driveinfo_floppy; break;
-        case S2S_CFG_MO:            driveinfo = driveinfo_magopt; break;
-        case S2S_CFG_SEQUENTIAL:    driveinfo = driveinfo_tape; break;
-        default:                    driveinfo = driveinfo_fixed; break;
+        // Use default drive IDs that are recognized by Apple machines
+        switch (img.deviceType)
+        {
+            case S2S_CFG_FIXED:         driveinfo = apl_driveinfo_fixed; break;
+            case S2S_CFG_REMOVEABLE:    driveinfo = apl_driveinfo_removable; break;
+            case S2S_CFG_OPTICAL:       driveinfo = apl_driveinfo_optical; break;
+            case S2S_CFG_FLOPPY_14MB:   driveinfo = apl_driveinfo_floppy; break;
+            case S2S_CFG_MO:            driveinfo = apl_driveinfo_magopt; break;
+            case S2S_CFG_SEQUENTIAL:    driveinfo = apl_driveinfo_tape; break;
+            default:                    driveinfo = apl_driveinfo_fixed; break;
+        }
+    }
+    else
+    {
+        // Generic IDs
+        switch (img.deviceType)
+        {
+            case S2S_CFG_FIXED:         driveinfo = driveinfo_fixed; break;
+            case S2S_CFG_REMOVEABLE:    driveinfo = driveinfo_removable; break;
+            case S2S_CFG_OPTICAL:       driveinfo = driveinfo_optical; break;
+            case S2S_CFG_FLOPPY_14MB:   driveinfo = driveinfo_floppy; break;
+            case S2S_CFG_MO:            driveinfo = driveinfo_magopt; break;
+            case S2S_CFG_SEQUENTIAL:    driveinfo = driveinfo_tape; break;
+            default:                    driveinfo = driveinfo_fixed; break;
+        }
     }
 
     if (img.vendor[0] == '\0')
@@ -355,11 +411,6 @@ static void setDefaultDriveInfo(int target_idx)
     }
 
     int rightAlign = img.rightAlignStrings;
-    if (rightAlign < 0)
-    {
-        // Default value based on quirks
-        rightAlign = (img.quirks == S2S_CFG_QUIRKS_APPLE);
-    }
 
     formatDriveInfoField(img.vendor, sizeof(img.vendor), rightAlign);
     formatDriveInfoField(img.prodId, sizeof(img.prodId), rightAlign);
@@ -367,7 +418,7 @@ static void setDefaultDriveInfo(int target_idx)
     formatDriveInfoField(img.serial, sizeof(img.serial), true);
 }
 
-bool scsiDiskOpenHDDImage(int target_idx, const char *filename, int scsi_id, int scsi_lun, int blocksize, bool is_cd, bool is_fd)
+bool scsiDiskOpenHDDImage(int target_idx, const char *filename, int scsi_id, int scsi_lun, int blocksize, S2S_CFG_TYPE type)
 {
     image_config_t &img = g_DiskImages[target_idx];
     img.file = ImageBackingStore(filename);
@@ -396,15 +447,30 @@ bool scsiDiskOpenHDDImage(int target_idx, const char *filename, int scsi_id, int
             azlog("---- WARNING: file ", filename, " is not contiguous. This will increase read latency.");
         }
 
-        if (is_cd)
+        if (type == S2S_CFG_OPTICAL)
         {
             azlog("---- Configuring as CD-ROM drive based on image name");
             img.deviceType = S2S_CFG_OPTICAL;
         }
-        else if (is_fd)
+        else if (type == S2S_CFG_FLOPPY_14MB)
         {
             azlog("---- Configuring as floppy drive based on image name");
             img.deviceType = S2S_CFG_FLOPPY_14MB;
+        }
+        else if (type == S2S_CFG_MO)
+        {
+            azlog("---- Configuring as magneto-optical based on image name");
+            img.deviceType = S2S_CFG_MO;
+        }
+        else if (type == S2S_CFG_REMOVEABLE)
+        {
+            azlog("---- Configuring as removable drive based on image name");
+            img.deviceType = S2S_CFG_REMOVEABLE;
+        }
+        else if (type == S2S_CFG_SEQUENTIAL)
+        {
+            azlog("---- Configuring as tape drive based on image name");
+            img.deviceType = S2S_CFG_SEQUENTIAL;
         }
 
 #ifdef AZPLATFORM_CONFIG_HOOK
@@ -471,7 +537,7 @@ static void scsiDiskLoadConfig(int target_idx, const char *section)
     img.sectorsPerTrack = ini_getl(section, "SectorsPerTrack", img.sectorsPerTrack, CONFIGFILE);
     img.headsPerCylinder = ini_getl(section, "HeadsPerCylinder", img.headsPerCylinder, CONFIGFILE);
     img.quirks = ini_getl(section, "Quirks", img.quirks, CONFIGFILE);
-    img.rightAlignStrings = ini_getbool(section, "RightAlignStrings", -1, CONFIGFILE);
+    img.rightAlignStrings = ini_getbool(section, "RightAlignStrings", 0, CONFIGFILE);
     img.prefetchbytes = ini_getl(section, "PrefetchBytes", img.prefetchbytes, CONFIGFILE);
     
     char tmp[32];
@@ -528,7 +594,7 @@ void scsiDiskLoadConfig(int target_idx)
         image_config_t &img = g_DiskImages[target_idx];
         int blocksize = (img.deviceType == S2S_CFG_OPTICAL) ? 2048 : 512;
         azlog("-- Opening ", filename, " for id:", target_idx, ", specified in " CONFIGFILE);
-        scsiDiskOpenHDDImage(target_idx, filename, target_idx, 0, blocksize, false, false);
+        scsiDiskOpenHDDImage(target_idx, filename, target_idx, 0, blocksize);
     }
 }
 
@@ -793,7 +859,7 @@ static bool checkNextCDImage()
         azlog("Switching to next CD-ROM image for ", target_idx, ": ", filename);
         image_config_t &img = g_DiskImages[target_idx];
         img.file.close();
-        bool status = scsiDiskOpenHDDImage(target_idx, filename, target_idx, 0, 2048, false, false);
+        bool status = scsiDiskOpenHDDImage(target_idx, filename, target_idx, 0, 2048);
 
         if (status)
         {
@@ -1216,6 +1282,10 @@ static void doRead(uint32_t lba, uint32_t blocks)
 
 void diskDataIn_callback(uint32_t bytes_complete)
 {
+    // On SCSI-1 devices the phase change has some extra delays.
+    // Doing it here lets the SD card transfer proceed in background.
+    scsiEnterPhase(DATA_IN);
+
     // For best performance, do writes in blocks of 4 or more bytes
     if (bytes_complete < g_disk_transfer.bytes_sd)
     {
@@ -1285,8 +1355,6 @@ static void start_dataInTransfer(uint8_t *buffer, uint32_t count)
 
 static void diskDataIn()
 {
-    scsiEnterPhase(DATA_IN);
-
     // Figure out how many blocks we can fit in buffer
     uint32_t bytesPerSector = scsiDev.target->liveCfg.bytesPerSector;
     uint32_t maxblocks = sizeof(scsiDev.data) / bytesPerSector;

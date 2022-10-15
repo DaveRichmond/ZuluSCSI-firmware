@@ -50,6 +50,7 @@
 #include "ZuluSCSI_log.h"
 #include "ZuluSCSI_log_trace.h"
 #include "ZuluSCSI_disk.h"
+#include "ZuluSCSI_initiator.h"
 
 SdFs SD;
 FsFile g_logfile;
@@ -212,8 +213,11 @@ bool findHDDImages()
       bool is_hd = (tolower(name[0]) == 'h' && tolower(name[1]) == 'd');
       bool is_cd = (tolower(name[0]) == 'c' && tolower(name[1]) == 'd');
       bool is_fd = (tolower(name[0]) == 'f' && tolower(name[1]) == 'd');
+      bool is_mo = (tolower(name[0]) == 'm' && tolower(name[1]) == 'o');
+      bool is_re = (tolower(name[0]) == 'r' && tolower(name[1]) == 'e');
+      bool is_tp = (tolower(name[0]) == 't' && tolower(name[1]) == 'p');
 
-      if (is_hd || is_cd || is_fd)
+      if (is_hd || is_cd || is_fd || is_mo || is_re || is_tp)
       {
         // Check file extension
         // We accept anything except known compressed files
@@ -308,7 +312,17 @@ bool findHDDImages()
         // Open the image file
         if(id < NUM_SCSIID && lun < NUM_SCSILUN) {
           azlog("-- Opening ", fullname, " for id:", id, " lun:", lun);
-          imageReady = scsiDiskOpenHDDImage(id, fullname, id, lun, blk, is_cd, is_fd);
+
+          // Type mapping based on filename.
+          // If type is FIXED, the type can still be overridden in .ini file.
+          S2S_CFG_TYPE type = S2S_CFG_FIXED;
+          if (is_cd) type = S2S_CFG_OPTICAL;
+          if (is_fd) type = S2S_CFG_FLOPPY_14MB;
+          if (is_mo) type = S2S_CFG_MO;
+          if (is_re) type = S2S_CFG_REMOVEABLE;
+          if (is_tp) type = S2S_CFG_SEQUENTIAL;
+
+          imageReady = scsiDiskOpenHDDImage(id, fullname, id, lun, blk, type);
           if(imageReady)
           {
             foundImage = true;
@@ -360,11 +374,6 @@ void readSCSIDeviceConfig()
   {
     scsiDiskLoadConfig(i);
   }
-  
-  if (ini_getbool("SCSI", "Debug", 0, CONFIGFILE))
-  {
-    g_azlog_debug = true;
-  }
 }
 
 /*********************************/
@@ -373,6 +382,26 @@ void readSCSIDeviceConfig()
 
 static void reinitSCSI()
 {
+  if (ini_getbool("SCSI", "Debug", 0, CONFIGFILE))
+  {
+    g_azlog_debug = true;
+  }
+
+#ifdef PLATFORM_HAS_INITIATOR_MODE
+  if (azplatform_is_initiator_mode_enabled())
+  {
+    // Initialize scsiDev to zero values even though it is not used
+    scsiInit();
+
+    // Initializer initiator mode state machine
+    scsiInitiatorInit();
+
+    blinkStatus(BLINK_STATUS_OK);
+
+    return;
+  }
+#endif
+
   scsiDiskResetImages();
   readSCSIDeviceConfig();
   findHDDImages();
@@ -388,7 +417,7 @@ static void reinitSCSI()
 #if RAW_FALLBACK_ENABLE
     azlog("No images found, enabling RAW fallback partition");
     scsiDiskOpenHDDImage(RAW_FALLBACK_SCSI_ID, "RAW:0:0xFFFFFFFF", RAW_FALLBACK_SCSI_ID, 0,
-                         RAW_FALLBACK_BLOCKSIZE, false, false);
+                         RAW_FALLBACK_BLOCKSIZE);
 #else
     azlog("No valid image files found!");
 #endif
@@ -441,14 +470,25 @@ extern "C" void zuluscsi_main_loop(void)
   static uint32_t sd_card_check_time = 0;
 
   azplatform_reset_watchdog();
-  scsiPoll();
-  scsiDiskPoll();
-  scsiLogPhaseChange(scsiDev.phase);
-
-  // Save log periodically during status phase if there are new messages.
-  if (scsiDev.phase == STATUS)
+  
+#ifdef PLATFORM_HAS_INITIATOR_MODE
+  if (azplatform_is_initiator_mode_enabled())
   {
+    scsiInitiatorMainLoop();
     save_logfile();
+  }
+  else
+#endif
+  {
+    scsiPoll();
+    scsiDiskPoll();
+    scsiLogPhaseChange(scsiDev.phase);
+
+    // Save log periodically during status phase if there are new messages.
+    if (scsiDev.phase == STATUS)
+    {
+      save_logfile();
+    }
   }
 
   // Check SD card status for hotplug

@@ -1,4 +1,4 @@
-ZuluSCSI Firmware
+ZuluSCSI™ Firmware
 =================
 
 Hard Drive & ISO image files
@@ -11,6 +11,9 @@ Examples of valid filenames:
 * `CD3.iso`: CD drive with SCSI ID 3
 
 In addition to the simplified filenames style above, the ZuluSCSI firmware also looks for images using the BlueSCSI-style "HDxy_512.hda" filename formatting.
+
+The media type can be set in `zuluscsi.ini`, or directly by the file name prefix.
+Supported prefixes are `HD` (hard drive), `CD` (cd-rom), `FD` (floppy), `MO` (magneto-optical), `RE` (generic removeable media), `TP` (sequential tape drive).
 
 Log files and error indications
 -------------------------------
@@ -56,18 +59,44 @@ When successful, the bootloader removes the update file and continues to main fi
 On failure, `Zuluerr.txt` is written on the SD card.
 
 Alternatively, the board can be programmed using USB connection in DFU mode by setting DIP switch 4.
-The necessary programmer utility for Windows can be downloaded from [GD32 website](http://www.gd32mcu.com/en/download?kw=dfu&lan=en). On Linux and MacOS, the standard 'dfu-util' can be used. It can be installed via your package manager under Linux. On MacOS, it is available through MacPorts and Brew as a package
+The necessary programmer utility for Windows can be downloaded from [GD32 website](http://www.gd32mcu.com/en/download?kw=dfu&lan=en). On Linux and MacOS, the standard 'dfu-util' can be used. It can be installed via your package manager under Linux. On MacOS, it is available through MacPorts and Brew as a package.
+
+`dfu-util --alt 0 --dfuse-address 0x08000000 --download ZuluSCSIv1_1_XXXXXX.bin`
+
+For RP2040-based boards, the USB programming uses `.uf2` format file that can be copied to the USB drive that shows up in bootloader mode.
 
 DIP switches
 ------------
 For ZuluSCSI V1.1, the DIP switch settings are as follows:
 
-- DEBUG: Enable verbose debug log (saved to `Zululog.txt`)
+- DEBUG: Enable verbose debug log (saved to `zululog.txt`)
 - TERM: Enable SCSI termination
 - BOOT: Enable built-in USB bootloader, this DIP switch MUST remain off during normal operation.
 - SW1: Enables/disables Macintosh/Apple specific mode-pages and device strings, which eases disk initialization when performing fresh installs on legacy Macintosh computers.
 
 ZuluSCSI Mini has no DIP switches, so all optional configuration parameters must be defined in zuluscsi.ini
+
+ZuluSCSI RP2040 DIP switch settings are:
+- INITIATOR: Enable SCSI initiator mode for imaging SCSI drives
+- DEBUG LOG: Enable verbose debug log (saved to `zululog.txt`)
+- TERMINATION: Enable SCSI termination
+- BOOTLOADER: Enable built-in USB bootloader, this DIP switch MUST remain off during normal operation.
+
+SCSI initiator mode
+-------------------
+The RP2040 model supports SCSI initiator mode for reading SCSI drives.
+When enabled by the DIP switch, ZuluSCSI RP2040 will scan for SCSI drives on the bus and copy the data as `HDxx_imaged.hda` to the SD card.
+
+LED indications in initiator mode:
+
+- Short blink once a second: idle, searching for SCSI drives
+- Fast blink 4 times per second: copying data. The blink acts as a progress bar: first it is short and becomes longer when data copying progresses.
+
+The firmware retries reads up to 5 times and attempts to skip any sectors that have problems.
+Any read errors are logged into `zululog.txt`.
+
+Depending on hardware setup, you may need to mount diode `D205` and jumper `JP201` to supply `TERMPWR` to the SCSI bus.
+This is necessary if the drives do not supply their own SCSI terminator power.
 
 Project structure
 -----------------

@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <ZuluSCSI_platform.h>
+
 // Use variables for version number
-#define FW_VER_NUM      "1.0.7"
-#define FW_VER_SUFFIX   "release"
+#define FW_VER_NUM      "1.1.1"
+#define FW_VER_SUFFIX   "devel"
 #define ZULU_FW_VERSION FW_VER_NUM "-" FW_VER_SUFFIX
 
 // Configuration and log file paths
@@ -51,6 +53,14 @@
 #define DRIVEINFO_FLOPPY    {"ZULUSCSI", "FLOPPY",    PLATFORM_REVISION, ""}
 #define DRIVEINFO_MAGOPT    {"ZULUSCSI", "MO_DRIVE",  PLATFORM_REVISION, ""}
 #define DRIVEINFO_TAPE      {"ZULUSCSI", "TAPE",      PLATFORM_REVISION, ""}
+
+// Default SCSI drive information when Apple quirks are enabled
+#define APPLE_DRIVEINFO_FIXED     {"CDC",      "ZuluSCSI HDD",      PLATFORM_REVISION, "1.0"}
+#define APPLE_DRIVEINFO_REMOVABLE {"IOMEGA",   "BETA230",           PLATFORM_REVISION, "2.02"}
+#define APPLE_DRIVEINFO_OPTICAL   {"MATSHITA", "CD-ROM CR-8004A",   PLATFORM_REVISION, "2.0a"}
+#define APPLE_DRIVEINFO_FLOPPY    {"TEAC",     "FD235HS",           PLATFORM_REVISION, "1.44"}
+#define APPLE_DRIVEINFO_MAGOPT    {"MOST",     "RMD-5200",          PLATFORM_REVISION, "1.0"}
+#define APPLE_DRIVEINFO_TAPE      {"ZULUSCSI", "APPLE_TAPE",        PLATFORM_REVISION, ""}
 
 // Default delay for SCSI phases.
 // Can be adjusted in ini file
