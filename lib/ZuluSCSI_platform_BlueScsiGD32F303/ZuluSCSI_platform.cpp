@@ -159,7 +159,7 @@ void azplatform_late_init()
      */
 
     // fake dip switch stuff here
-    g_azlog_debug = true; // debug on for now
+    g_azlog_debug = false; // debug off for now, to avoid being slowed down by uart polling
 }
 
 
