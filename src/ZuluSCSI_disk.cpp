@@ -18,6 +18,7 @@
 extern "C" {
 #include <scsi2sd_time.h>
 #include <sd.h>
+#include <mode.h>
 }
 
 #ifndef PLATFORM_MAX_SCSI_SPEED
@@ -43,8 +44,211 @@ extern "C" {
 #define PLATFORM_OPTIMAL_LAST_SD_WRITE_SIZE 512
 #endif
 
+// Optimal size for read block from SCSI bus
+// For platforms with nonblocking transfer, this can be large.
+// For Akai MPC60 compatibility this has to be at least 5120
+#ifndef PLATFORM_OPTIMAL_SCSI_READ_BLOCK_SIZE
+#ifdef PLATFORM_SCSIPHY_HAS_NONBLOCKING_READ
+#define PLATFORM_OPTIMAL_SCSI_READ_BLOCK_SIZE 65536
+#else
+#define PLATFORM_OPTIMAL_SCSI_READ_BLOCK_SIZE 8192
+#endif
+#endif
+
+#ifndef PLATFORM_HAS_ROM_DRIVE
+// Dummy defines for platforms without ROM drive support
+#define AZPLATFORM_ROMDRIVE_PAGE_SIZE 1024
+uint32_t azplatform_get_romdrive_maxsize() { return 0; }
+bool azplatform_read_romdrive(uint8_t *dest, uint32_t start, uint32_t count) { return false; }
+bool azplatform_write_romdrive(const uint8_t *data, uint32_t start, uint32_t count) { return false; }
+#endif
+
+#ifndef PLATFORM_SCSIPHY_HAS_NONBLOCKING_READ
+// For platforms that do not have non-blocking read from SCSI bus
+void scsiStartRead(uint8_t* data, uint32_t count, int *parityError)
+{
+    scsiRead(data, count, parityError);
+}
+void scsiFinishRead(uint8_t* data, uint32_t count, int *parityError)
+{
+    
+}
+bool scsiIsReadFinished(const uint8_t *data)
+{
+    return true;
+}
+#endif
+
 // SD card sector size is always 512 bytes
 #define SD_SECTOR_SIZE 512
+
+/************************************************/
+/* ROM drive support (in microcontroller flash) */
+/************************************************/
+
+struct romdrive_hdr_t {
+    char magic[8]; // "ROMDRIVE"
+    int scsi_id;
+    uint32_t imagesize;
+    uint32_t blocksize;
+    S2S_CFG_TYPE drivetype;
+    uint32_t reserved[32];
+};
+
+// Check if the romdrive is present
+static bool check_romdrive(romdrive_hdr_t *hdr)
+{
+    if (!azplatform_read_romdrive((uint8_t*)hdr, 0, sizeof(romdrive_hdr_t)))
+    {
+        return false;
+    }
+
+    if (memcmp(hdr->magic, "ROMDRIVE", 8) != 0)
+    {
+        return false;
+    }
+
+    if (hdr->imagesize <= 0 || hdr->scsi_id < 0 || hdr->scsi_id > 8)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+// Load an image file to romdrive
+bool scsiDiskProgramRomDrive(const char *filename, int scsi_id, int blocksize, S2S_CFG_TYPE type)
+{
+#ifndef PLATFORM_HAS_ROM_DRIVE
+    azlog("---- Platform does not support ROM drive");
+    return false;
+#endif
+
+    FsFile file = SD.open(filename, O_RDONLY);
+    if (!file.isOpen())
+    {
+        azlog("---- Failed to open: ", filename);
+        return false;
+    }
+
+    uint64_t filesize = file.size();
+    uint32_t maxsize = azplatform_get_romdrive_maxsize() - AZPLATFORM_ROMDRIVE_PAGE_SIZE;
+
+    azlog("---- SCSI ID: ", scsi_id, " blocksize ", blocksize, " type ", (int)type);
+    azlog("---- ROM drive maximum size is ", (int)maxsize,
+          " bytes, image file is ", (int)filesize, " bytes");
+    
+    if (filesize > maxsize)
+    {
+        azlog("---- Image size exceeds ROM space, not loading");
+        file.close();
+        return false;
+    }
+
+    romdrive_hdr_t hdr = {};
+    memcpy(hdr.magic, "ROMDRIVE", 8);
+    hdr.scsi_id = scsi_id;
+    hdr.imagesize = filesize;
+    hdr.blocksize = blocksize;
+    hdr.drivetype = type;
+
+    // Program the drive metadata header
+    if (!azplatform_write_romdrive((const uint8_t*)&hdr, 0, AZPLATFORM_ROMDRIVE_PAGE_SIZE))
+    {
+        azlog("---- Failed to program ROM drive header");
+        file.close();
+        return false;
+    }
+    
+    // Program the drive contents
+    uint32_t pages = (filesize + AZPLATFORM_ROMDRIVE_PAGE_SIZE - 1) / AZPLATFORM_ROMDRIVE_PAGE_SIZE;
+    for (uint32_t i = 0; i < pages; i++)
+    {
+        if (i % 2)
+            LED_ON();
+        else
+            LED_OFF();
+
+        if (file.read(scsiDev.data, AZPLATFORM_ROMDRIVE_PAGE_SIZE) <= 0 ||
+            !azplatform_write_romdrive(scsiDev.data, (i + 1) * AZPLATFORM_ROMDRIVE_PAGE_SIZE, AZPLATFORM_ROMDRIVE_PAGE_SIZE))
+        {
+            azlog("---- Failed to program ROM drive page ", (int)i);
+            file.close();
+            return false;
+        }
+    }
+
+    LED_OFF();
+
+    file.close();
+
+    char newname[MAX_FILE_PATH * 2] = "";
+    strlcat(newname, filename, sizeof(newname));
+    strlcat(newname, "_loaded", sizeof(newname));
+    SD.rename(filename, newname);
+    azlog("---- ROM drive programming successful, image file renamed to ", newname);
+
+    return true;
+}
+
+bool scsiDiskCheckRomDrive()
+{
+    romdrive_hdr_t hdr = {};
+    return check_romdrive(&hdr);
+}
+
+// Check if rom drive exists and activate it
+bool scsiDiskActivateRomDrive()
+{
+#ifndef PLATFORM_HAS_ROM_DRIVE
+    return false;
+#endif
+
+    uint32_t maxsize = azplatform_get_romdrive_maxsize() - AZPLATFORM_ROMDRIVE_PAGE_SIZE;
+    azlog("-- Platform supports ROM drive up to ", (int)(maxsize / 1024), " kB");
+
+    romdrive_hdr_t hdr = {};
+    if (!check_romdrive(&hdr))
+    {
+        azlog("---- ROM drive image not detected");
+        return false;
+    }
+
+    if (ini_getbool("SCSI", "DisableROMDrive", 0, CONFIGFILE))
+    {
+        azlog("---- ROM drive disabled in ini file, not enabling");
+        return false;
+    }
+
+    long rom_scsi_id = ini_getl("SCSI", "ROMDriveSCSIID", -1, CONFIGFILE);
+    if (rom_scsi_id >= 0 && rom_scsi_id <= 7)
+    {
+        hdr.scsi_id = rom_scsi_id;
+        azlog("---- ROM drive SCSI id overriden in ini file, changed to ", (int)hdr.scsi_id);
+    }
+
+    if (s2s_getConfigById(hdr.scsi_id))
+    {
+        azlog("---- ROM drive SCSI id ", (int)hdr.scsi_id, " is already in use, not enabling");
+        return false;
+    }
+
+
+
+    azlog("---- Activating ROM drive, SCSI id ", (int)hdr.scsi_id, " size ", (int)(hdr.imagesize / 1024), " kB");
+    bool status = scsiDiskOpenHDDImage(hdr.scsi_id, "ROM:", hdr.scsi_id, 0, hdr.blocksize, hdr.drivetype);
+
+    if (!status)
+    {
+        azlog("---- ROM drive activation failed");
+        return false;
+    }
+    else
+    {
+        return true;
+    }
+}
+
 
 /***********************/
 /* Backing image files */
@@ -58,17 +262,22 @@ SdDevice sdDev = {2, 256 * 1024 * 1024 * 2}; /* For SCSI2SD */
 //
 // Raw access is activated by using filename like "RAW:0:12345"
 // where the numbers are the first and last sector.
+//
+// If the platform supports a ROM drive, it is activated by using
+// filename "ROM:".
 class ImageBackingStore
 {
 public:
     ImageBackingStore()
     {
         m_israw = false;
+        m_isrom = false;
+        m_isreadonly_attr = false;
         m_blockdev = nullptr;
         m_bgnsector = m_endsector = m_cursector = 0;
     }
 
-    ImageBackingStore(const char *filename): ImageBackingStore()
+    ImageBackingStore(const char *filename, uint32_t scsi_block_size): ImageBackingStore()
     {
         if (strncasecmp(filename, "RAW:", 4) == 0)
         {
@@ -82,6 +291,12 @@ public:
                 return;
             }
 
+            if ((scsi_block_size % SD_SECTOR_SIZE) != 0)
+            {
+                azlog("SCSI block size ", (int)scsi_block_size, " is not supported for RAW partitions (must be divisible by 512 bytes)");
+                return;
+            }
+
             m_israw = true;
             m_blockdev = SD.card();
 
@@ -92,13 +307,34 @@ public:
                 m_endsector = sectorCount - 1;
             }
         }
+        else if (strncasecmp(filename, "ROM:", 4) == 0)
+        {
+            if (!check_romdrive(&m_romhdr))
+            {
+                m_romhdr.imagesize = 0;
+            }
+            else
+            {
+                m_isrom = true;
+            }
+        }
         else
         {
-            m_fsfile = SD.open(filename, O_RDWR);
+            m_isreadonly_attr = !!(FS_ATTRIB_READ_ONLY & SD.attrib(filename));
+            if (m_isreadonly_attr)
+            {
+                m_fsfile = SD.open(filename, O_RDONLY);
+                azlog("---- Image file is read-only, writes disabled");
+            }
+            else
+            {
+                m_fsfile = SD.open(filename, O_RDWR);
+            }
 
             uint32_t sectorcount = m_fsfile.size() / SD_SECTOR_SIZE;
             uint32_t begin = 0, end = 0;
-            if (m_fsfile.contiguousRange(&begin, &end) && end >= begin + sectorcount)
+            if (m_fsfile.contiguousRange(&begin, &end) && end >= begin + sectorcount
+                && (scsi_block_size % SD_SECTOR_SIZE) == 0)
             {
                 // Convert to raw mapping, this avoids some unnecessary
                 // access overhead in SdFat library.
@@ -126,12 +362,36 @@ public:
         }
     }
 
-    bool isOpen() { return m_israw ? !!m_blockdev : m_fsfile.isOpen(); }
+    bool isWritable()
+    {
+        return !m_isrom && !m_isreadonly_attr;
+    }
+
+    bool isRom()
+    {
+        return m_isrom;
+    }
+
+    bool isOpen()
+    {
+        if (m_israw)
+            return (m_blockdev != NULL);
+        else if (m_isrom)
+            return (m_romhdr.imagesize > 0);
+        else
+            return m_fsfile.isOpen();
+    }
+
     bool close()
     {
         if (m_israw)
         {
             m_blockdev = nullptr;
+            return true;
+        }
+        else if (m_isrom)
+        {
+            m_romhdr.imagesize = 0;
             return true;
         }
         else
@@ -145,6 +405,10 @@ public:
         if (m_israw && m_blockdev)
         {
             return (uint64_t)(m_endsector - m_bgnsector + 1) * SD_SECTOR_SIZE;
+        }
+        else if (m_isrom)
+        {
+            return m_romhdr.imagesize;
         }
         else
         {
@@ -160,6 +424,12 @@ public:
             *endSector = m_endsector;
             return true;
         }
+        else if (m_isrom)
+        {
+            *bgnSector = 0;
+            *endSector = 0;
+            return true;
+        }
         else
         {
             return m_fsfile.contiguousRange(bgnSector, endSector);
@@ -168,12 +438,19 @@ public:
 
     bool seek(uint64_t pos)
     {
-        if (m_israw && m_blockdev)
+        if (m_israw)
         {
             uint32_t sectornum = pos / SD_SECTOR_SIZE;
             assert((uint64_t)sectornum * SD_SECTOR_SIZE == pos);
             m_cursector = m_bgnsector + sectornum;
             return (m_cursector <= m_endsector);
+        }
+        else if (m_isrom)
+        {
+            uint32_t sectornum = pos / SD_SECTOR_SIZE;
+            assert((uint64_t)sectornum * SD_SECTOR_SIZE == pos);
+            m_cursector = sectornum;
+            return m_cursector * SD_SECTOR_SIZE < m_romhdr.imagesize;
         }
         else
         {
@@ -188,6 +465,21 @@ public:
             uint32_t sectorcount = count / SD_SECTOR_SIZE;
             assert((uint64_t)sectorcount * SD_SECTOR_SIZE == count);
             if (m_blockdev->readSectors(m_cursector, (uint8_t*)buf, sectorcount))
+            {
+                m_cursector += sectorcount;
+                return count;
+            }
+            else
+            {
+                return -1;
+            }
+        }
+        else if (m_isrom)
+        {
+            uint32_t sectorcount = count / SD_SECTOR_SIZE;
+            assert((uint64_t)sectorcount * SD_SECTOR_SIZE == count);
+            uint32_t start = m_cursector * SD_SECTOR_SIZE + AZPLATFORM_ROMDRIVE_PAGE_SIZE;
+            if (azplatform_read_romdrive((uint8_t*)buf, start, count))
             {
                 m_cursector += sectorcount;
                 return count;
@@ -219,6 +511,16 @@ public:
                 return 0;
             }
         }
+        else if (m_isrom)
+        {
+            azlog("ERROR: attempted to write to ROM drive");
+            return 0;
+        }
+        else  if (m_isreadonly_attr)
+        {
+            azlog("ERROR: attempted to write to a read only image");
+            return 0;
+        }
         else
         {
             return m_fsfile.write(buf, count);
@@ -227,7 +529,7 @@ public:
 
     void flush()
     {
-        if (!m_israw)
+        if (!m_israw && !m_isrom && !m_isreadonly_attr)
         {
             m_fsfile.flush();
         }
@@ -235,6 +537,9 @@ public:
 
 private:
     bool m_israw;
+    bool m_isrom;
+    bool m_isreadonly_attr;
+    romdrive_hdr_t m_romhdr;
     FsFile m_fsfile;
     SdCard *m_blockdev;
     uint32_t m_bgnsector;
@@ -249,6 +554,7 @@ struct image_config_t: public S2S_TargetCfg
     // For CD-ROM drive ejection
     bool ejected;
     uint8_t cdrom_events;
+    bool reinsert_on_inquiry;
 
     // Index of image, for when image on-the-fly switching is used for CD drives
     int image_index;
@@ -395,7 +701,7 @@ static void setDefaultDriveInfo(int target_idx)
         uint32_t sd_sn = 0;
         if (SD.card()->readCID(&sd_cid))
         {
-            sd_sn = sd_cid.psn;
+            sd_sn = sd_cid.psn();
         }
 
         memset(img.serial, 0, sizeof(img.serial));
@@ -421,7 +727,7 @@ static void setDefaultDriveInfo(int target_idx)
 bool scsiDiskOpenHDDImage(int target_idx, const char *filename, int scsi_id, int scsi_lun, int blocksize, S2S_CFG_TYPE type)
 {
     image_config_t &img = g_DiskImages[target_idx];
-    img.file = ImageBackingStore(filename);
+    img.file = ImageBackingStore(filename, blocksize);
 
     if (img.file.isOpen())
     {
@@ -438,7 +744,11 @@ bool scsiDiskOpenHDDImage(int target_idx, const char *filename, int scsi_id, int
         }
 
         uint32_t sector_begin = 0, sector_end = 0;
-        if (img.file.contiguousRange(&sector_begin, &sector_end))
+        if (img.file.isRom())
+        {
+            // ROM is always contiguous, no need to log
+        }
+        else if (img.file.contiguousRange(&sector_begin, &sector_end))
         {
             azlog("---- Image file is contiguous, SD card sectors ", (int)sector_begin, " to ", (int)sector_end);
         }
@@ -539,6 +849,7 @@ static void scsiDiskLoadConfig(int target_idx, const char *section)
     img.quirks = ini_getl(section, "Quirks", img.quirks, CONFIGFILE);
     img.rightAlignStrings = ini_getbool(section, "RightAlignStrings", 0, CONFIGFILE);
     img.prefetchbytes = ini_getl(section, "PrefetchBytes", img.prefetchbytes, CONFIGFILE);
+    img.reinsert_on_inquiry = ini_getbool(section, "ReinsertCDOnInquiry", 1, CONFIGFILE);
     
     char tmp[32];
     memset(tmp, 0, sizeof(tmp));
@@ -667,6 +978,18 @@ void s2s_configInit(S2S_BoardCfg* config)
         azlog("-- MapLunsToIDs is on");
         config->flags |= S2S_CFG_MAP_LUNS_TO_IDS;
     }
+
+#ifdef PLATFORM_HAS_PARITY_CHECK
+    if (ini_getbool("SCSI", "EnableParity", true, CONFIGFILE))
+    {
+        azlog("-- EnableParity is on");
+        config->flags |= S2S_CFG_ENABLE_PARITY;
+    }
+    else
+    {
+        azlog("-- EnableParity is off");
+    }
+#endif
 }
 
 extern "C"
@@ -705,7 +1028,8 @@ const S2S_TargetCfg* s2s_getConfigById(int scsiId)
     for (i = 0; i < S2S_MAX_TARGETS; ++i)
     {
         const S2S_TargetCfg* tgt = s2s_getConfigByIndex(i);
-        if ((tgt->scsiId & S2S_CFG_TARGET_ID_BITS) == scsiId)
+        if ((tgt->scsiId & S2S_CFG_TARGET_ID_BITS) == scsiId &&
+            (tgt->scsiId & S2S_CFG_TARGET_ENABLED))
         {
             return tgt;
         }
@@ -872,6 +1196,25 @@ static bool checkNextCDImage()
     return false;
 }
 
+// Reinsert any ejected CDROMs on reboot
+static void reinsertCDROM(image_config_t &img)
+{
+    if (img.image_index > 0)
+    {
+        // Multiple images for this drive, force restart from first one
+        azdbg("---- Restarting from first CD-ROM image");
+        img.image_index = 9;
+        checkNextCDImage();
+    }
+    else if (img.ejected)
+    {
+        // Reinsert the single image
+        azdbg("---- Closing CD-ROM tray");
+        img.ejected = false;
+        img.cdrom_events = 2; // New media
+    }
+}
+
 static int doTestUnitReady()
 {
     int ready = 1;
@@ -1001,8 +1344,9 @@ static struct {
     uint32_t bytes_sd; // Number of bytes that have been scheduled for transfer on SD card side
     uint32_t bytes_scsi; // Number of bytes that have been scheduled for transfer on SCSI side
 
-    uint32_t bytes_scsi_done;
+    uint32_t bytes_scsi_started;
     uint32_t sd_transfer_start;
+    int parityError;
 } g_disk_transfer;
 
 #ifdef PREFETCH_BUFFER_SIZE
@@ -1033,10 +1377,11 @@ static void doWrite(uint32_t lba, uint32_t blocks)
     azdbg("------ Write ", (int)blocks, "x", (int)bytesPerSector, " starting at ", (int)lba);
 
     if (unlikely(blockDev.state & DISK_WP) ||
-        unlikely(scsiDev.target->cfg->deviceType == S2S_CFG_OPTICAL))
+        unlikely(scsiDev.target->cfg->deviceType == S2S_CFG_OPTICAL) ||
+        unlikely(!img.file.isWritable()))
 
     {
-        azlog("WARNING: Host attempted write to CD-ROM");
+        azlog("WARNING: Host attempted write to read-only drive ID ", (int)(img.scsiId & S2S_CFG_TARGET_ID_BITS));
         scsiDev.status = CHECK_CONDITION;
         scsiDev.target->sense.code = ILLEGAL_REQUEST;
         scsiDev.target->sense.asc = WRITE_PROTECTED;
@@ -1087,42 +1432,33 @@ void diskDataOut_callback(uint32_t bytes_complete)
     // For best performance, do SCSI reads in blocks of 4 or more bytes
     bytes_complete &= ~3;
 
-    if (g_disk_transfer.bytes_scsi_done < g_disk_transfer.bytes_scsi)
+    if (g_disk_transfer.bytes_scsi_started < g_disk_transfer.bytes_scsi)
     {
         // How many bytes remaining in the transfer?
-        uint32_t remain = g_disk_transfer.bytes_scsi - g_disk_transfer.bytes_scsi_done;
+        uint32_t remain = g_disk_transfer.bytes_scsi - g_disk_transfer.bytes_scsi_started;
         uint32_t len = remain;
         
-        // Limit maximum amount of data transferred at one go, to give enough callbacks to SD driver.
-        // Select the limit based on total bytes in the transfer.
-        // Transfer size is reduced towards the end of transfer to reduce the dead time between
-        // end of SCSI transfer and the SD write completing.
-        uint32_t limit = g_disk_transfer.bytes_scsi / 8;
-        uint32_t bytesPerSector = scsiDev.target->liveCfg.bytesPerSector;
-        if (limit < PLATFORM_OPTIMAL_MIN_SD_WRITE_SIZE) limit = PLATFORM_OPTIMAL_MIN_SD_WRITE_SIZE;
-        if (limit > PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE) limit = PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE;
-        if (limit > len) limit = PLATFORM_OPTIMAL_LAST_SD_WRITE_SIZE;
-        if (limit < bytesPerSector) limit = bytesPerSector;
-
-        if (len > limit)
-        {
-            len = limit;
-        }
-
         // Split read so that it doesn't wrap around buffer edge
         uint32_t bufsize = sizeof(scsiDev.data);
-        uint32_t start = (g_disk_transfer.bytes_scsi_done % bufsize);
+        uint32_t start = (g_disk_transfer.bytes_scsi_started % bufsize);
         if (start + len > bufsize)
             len = bufsize - start;
 
+        // Apply platform-specific optimized transfer sizes
+        if (len > PLATFORM_OPTIMAL_SCSI_READ_BLOCK_SIZE)
+        {
+            len = PLATFORM_OPTIMAL_SCSI_READ_BLOCK_SIZE;
+        }
+
         // Don't overwrite data that has not yet been written to SD card
         uint32_t sd_ready_cnt = g_disk_transfer.bytes_sd + bytes_complete;
-        if (g_disk_transfer.bytes_scsi_done + len > sd_ready_cnt + bufsize)
-            len = sd_ready_cnt + bufsize - g_disk_transfer.bytes_scsi_done;
+        if (g_disk_transfer.bytes_scsi_started + len > sd_ready_cnt + bufsize)
+            len = sd_ready_cnt + bufsize - g_disk_transfer.bytes_scsi_started;
 
         // Keep transfers a multiple of sector size.
         // Macintosh SCSI driver seems to get confused if we have a delay
         // in middle of a sector.
+        uint32_t bytesPerSector = scsiDev.target->liveCfg.bytesPerSector;
         if (remain >= bytesPerSector && len % bytesPerSector != 0)
         {
             len -= len % bytesPerSector;
@@ -1132,17 +1468,8 @@ void diskDataOut_callback(uint32_t bytes_complete)
             return;
 
         // azdbg("SCSI read ", (int)start, " + ", (int)len);
-        int parityError = 0;
-        scsiRead(&scsiDev.data[start], len, &parityError);
-        g_disk_transfer.bytes_scsi_done += len;
-
-        if (parityError)
-        {
-            scsiDev.status = CHECK_CONDITION;
-            scsiDev.target->sense.code = ABORTED_COMMAND;
-            scsiDev.target->sense.asc = SCSI_PARITY_ERROR;
-            scsiDev.phase = STATUS;
-        }
+        scsiStartRead(&scsiDev.data[start], len, &g_disk_transfer.parityError);
+        g_disk_transfer.bytes_scsi_started += len;
     }
 }
 
@@ -1156,46 +1483,108 @@ void diskDataOut()
     g_disk_transfer.buffer = scsiDev.data;
     g_disk_transfer.bytes_scsi = blockcount * bytesPerSector;
     g_disk_transfer.bytes_sd = 0;
-    g_disk_transfer.bytes_scsi_done = 0;
+    g_disk_transfer.bytes_scsi_started = 0;
     g_disk_transfer.sd_transfer_start = 0;
+    g_disk_transfer.parityError = 0;
 
     while (g_disk_transfer.bytes_sd < g_disk_transfer.bytes_scsi
            && scsiDev.phase == DATA_OUT
            && !scsiDev.resetFlag)
     {
-        // Read next block from SCSI bus
-        if (g_disk_transfer.bytes_sd == g_disk_transfer.bytes_scsi_done)
-        {
-            diskDataOut_callback(0);
-        }
-
-        // Figure out longest continuous block in buffer
+        // Figure out how many contiguous bytes are available for writing to SD card.
         uint32_t bufsize = sizeof(scsiDev.data);
         uint32_t start = g_disk_transfer.bytes_sd % bufsize;
-        uint32_t len = g_disk_transfer.bytes_scsi_done - g_disk_transfer.bytes_sd;
-        if (start + len > bufsize) len = bufsize - start;
+        uint32_t len = 0;
 
-        // Try to do writes in multiple of 512 bytes
-        // This allows better performance for SD card access.
-        if (len >= 512) len &= ~511;
+        // How much data until buffer edge wrap?
+        uint32_t available = g_disk_transfer.bytes_scsi_started - g_disk_transfer.bytes_sd;
+        if (start + available > bufsize)
+            available = bufsize - start;
 
-        // Start writing to SD card and simultaneously reading more from SCSI bus
-        uint8_t *buf = &scsiDev.data[start];
-        g_disk_transfer.sd_transfer_start = start;
-        // azdbg("SD write ", (int)start, " + ", (int)len);
-        azplatform_set_sd_callback(&diskDataOut_callback, buf);
-        if (img.file.write(buf, len) != len)
+        // Count number of finished sectors
+        if (scsiIsReadFinished(&scsiDev.data[start + available - 1]))
         {
-            azlog("SD card write failed: ", SD.sdErrorCode());
-            scsiDev.status = CHECK_CONDITION;
-            scsiDev.target->sense.code = MEDIUM_ERROR;
-            scsiDev.target->sense.asc = WRITE_ERROR_AUTO_REALLOCATION_FAILED;
-            scsiDev.phase = STATUS;
+            len = available;
         }
-        g_disk_transfer.bytes_sd += len;
+        else
+        {
+            while (len < available && scsiIsReadFinished(&scsiDev.data[start + len + SD_SECTOR_SIZE - 1]))
+            {
+                len += SD_SECTOR_SIZE;
+            }
+        }
+
+        // In case the last sector is partial (256 byte SCSI sectors)
+        if (len > available)
+        {
+            len = available;
+        }
+
+        // Apply platform-specific write size blocks for optimization
+        if (len > PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE)
+        {
+            len = PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE;
+        }
+
+        uint32_t remain_in_transfer = g_disk_transfer.bytes_scsi - g_disk_transfer.bytes_sd;
+        if (len < bufsize - start && len < remain_in_transfer)
+        {
+            // Use large write blocks in middle of transfer and smaller at the end of transfer.
+            // This improves performance for large writes and reduces latency at end of request.
+            uint32_t min_write_size = PLATFORM_OPTIMAL_MIN_SD_WRITE_SIZE;
+            if (remain_in_transfer <= PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE)
+            {
+                min_write_size = PLATFORM_OPTIMAL_LAST_SD_WRITE_SIZE;
+            }
+
+            if (len < min_write_size)
+            {                
+                len = 0;
+            }
+        }
+
+        if (len == 0)
+        {
+            // Nothing ready to transfer, check if we can read more from SCSI bus
+            diskDataOut_callback(0);
+        }
+        else
+        {
+            // Finalize transfer on SCSI side
+            scsiFinishRead(&scsiDev.data[start], len, &g_disk_transfer.parityError);
+
+            // Check parity error status before writing to SD card
+            if (g_disk_transfer.parityError)
+            {
+                scsiDev.status = CHECK_CONDITION;
+                scsiDev.target->sense.code = ABORTED_COMMAND;
+                scsiDev.target->sense.asc = SCSI_PARITY_ERROR;
+                scsiDev.phase = STATUS;
+                break;
+            }
+
+            // Start writing to SD card and simultaneously start new SCSI transfers
+            // when buffer space is freed.
+            uint8_t *buf = &scsiDev.data[start];
+            g_disk_transfer.sd_transfer_start = start;
+            // azdbg("SD write ", (int)start, " + ", (int)len, " ", bytearray(buf, len));
+            azplatform_set_sd_callback(&diskDataOut_callback, buf);
+            if (img.file.write(buf, len) != len)
+            {
+                azlog("SD card write failed: ", SD.sdErrorCode());
+                scsiDev.status = CHECK_CONDITION;
+                scsiDev.target->sense.code = MEDIUM_ERROR;
+                scsiDev.target->sense.asc = WRITE_ERROR_AUTO_REALLOCATION_FAILED;
+                scsiDev.phase = STATUS;
+            }
+            azplatform_set_sd_callback(NULL, NULL);
+            g_disk_transfer.bytes_sd += len;
+        }
     }
 
-    azplatform_set_sd_callback(NULL, NULL);
+    // Release SCSI bus
+    scsiFinishRead(NULL, 0, &g_disk_transfer.parityError);
+
     transfer.currentBlock += blockcount;
     scsiDev.dataPtr = scsiDev.dataLen = 0;
 
@@ -1661,6 +2050,13 @@ int scsiDiskCommand()
 
         scsiDev.phase = DATA_IN;
     }
+    else if (img.file.isRom())
+    {
+        // Special handling for ROM drive to make SCSI2SD code report it as read-only
+        blockDev.state |= DISK_WP;
+        commandHandled = scsiModeCommand();
+        blockDev.state &= ~DISK_WP;
+    }
     else
     {
         commandHandled = 0;
@@ -1697,6 +2093,16 @@ void scsiDiskPoll()
             image_config_t &img = *(image_config_t*)scsiDev.target->cfg;
             checkDiskGeometryDivisible(img);
         }
+
+        // Check for Inquiry command to reinsert CD-ROMs on boot
+        if (command == 0x12)
+        {
+            image_config_t &img = *(image_config_t*)scsiDev.target->cfg;
+            if (img.deviceType == S2S_CFG_OPTICAL && img.reinsert_on_inquiry)
+            {
+                reinsertCDROM(img);
+            }
+        }
     }
 }
 
@@ -1722,14 +2128,7 @@ void scsiDiskReset()
         image_config_t &img = g_DiskImages[i];
         if (img.deviceType == S2S_CFG_OPTICAL)
         {
-            img.ejected = false;
-            img.cdrom_events = 2; // New media
-
-            if (img.image_index > 0)
-            {
-                img.image_index = 9; // Force restart back from 0
-                checkNextCDImage();
-            }
+            reinsertCDROM(img);
         }
     }
 }

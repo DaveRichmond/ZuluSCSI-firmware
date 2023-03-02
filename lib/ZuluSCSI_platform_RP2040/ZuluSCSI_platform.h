@@ -16,11 +16,12 @@ extern const char *g_azplatform_name;
 #define PLATFORM_NAME "ZuluSCSI RP2040"
 #define PLATFORM_REVISION "2.0"
 #define PLATFORM_MAX_SCSI_SPEED S2S_CFG_SPEED_SYNC_10
-#define PLATFORM_OPTIMAL_MIN_SD_WRITE_SIZE 4096
-#define PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE 32768
+#define PLATFORM_OPTIMAL_MIN_SD_WRITE_SIZE 32768
+#define PLATFORM_OPTIMAL_MAX_SD_WRITE_SIZE 65536
 #define PLATFORM_OPTIMAL_LAST_SD_WRITE_SIZE 8192
 #define SD_USE_SDIO 1
 #define PLATFORM_HAS_INITIATOR_MODE 1
+#define PLATFORM_HAS_PARITY_CHECK 1
 
 // NOTE: The driver supports synchronous speeds higher than 10MB/s, but this
 // has not been tested due to lack of fast enough SCSI adapter.
@@ -54,6 +55,9 @@ void azplatform_init();
 // Initialization for main application, not used for bootloader
 void azplatform_late_init();
 
+// Disable the status LED
+void azplatform_disable_led(void);
+
 // Query whether initiator mode is enabled on targets with PLATFORM_HAS_INITIATOR_MODE
 bool azplatform_is_initiator_mode_enabled();
 
@@ -73,6 +77,25 @@ void azplatform_set_sd_callback(sd_callback_t func, const uint8_t *buffer);
 bool azplatform_rewrite_flash_page(uint32_t offset, uint8_t buffer[AZPLATFORM_FLASH_PAGE_SIZE]);
 void azplatform_boot_to_main_firmware();
 #endif
+
+// ROM drive in the unused external flash area
+#ifndef RP2040_DISABLE_ROMDRIVE
+#define PLATFORM_HAS_ROM_DRIVE 1
+// Check maximum available space for ROM drive in bytes
+uint32_t azplatform_get_romdrive_maxsize();
+
+// Read ROM drive area
+bool azplatform_read_romdrive(uint8_t *dest, uint32_t start, uint32_t count);
+
+// Reprogram ROM drive area
+#define AZPLATFORM_ROMDRIVE_PAGE_SIZE 4096
+bool azplatform_write_romdrive(const uint8_t *data, uint32_t start, uint32_t count);
+#endif
+
+// Parity lookup tables for write and read from SCSI bus.
+// These are used by macros below and the code in scsi_accel_rp2040.cpp
+extern const uint16_t g_scsi_parity_lookup[256];
+extern const uint16_t g_scsi_parity_check_lookup[512];
 
 // Below are GPIO access definitions that are used from scsiPhy.cpp.
 
@@ -106,7 +129,6 @@ void azplatform_boot_to_main_firmware();
      sio_hw->gpio_oe_set = SCSI_IO_DATA_MASK)
 
 // Write SCSI data bus, also sets REQ to inactive.
-extern const uint32_t g_scsi_parity_lookup[256];
 #define SCSI_OUT_DATA(data) \
     gpio_put_masked(SCSI_IO_DATA_MASK | (1 << SCSI_OUT_REQ), \
                     g_scsi_parity_lookup[(uint8_t)(data)] | (1 << SCSI_OUT_REQ)), \

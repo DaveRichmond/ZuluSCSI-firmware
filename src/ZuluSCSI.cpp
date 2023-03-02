@@ -54,6 +54,8 @@
 
 SdFs SD;
 FsFile g_logfile;
+static bool g_romdrive_active;
+static bool g_sdcard_present;
 
 /************************************/
 /* Status reporting by blinking led */
@@ -95,7 +97,7 @@ void save_logfile(bool always = false)
   static uint32_t prev_log_save = 0;
   uint32_t loglen = azlog_get_buffer_len();
 
-  if (loglen != prev_log_len)
+  if (loglen != prev_log_len && g_sdcard_present)
   {
     // When debug is off, save log at most every LOG_SAVE_INTERVAL_MS
     // When debug is on, save after every SCSI command.
@@ -140,13 +142,8 @@ void print_sd_info()
     
     char sdname[6] = {sd_cid.pnm[0], sd_cid.pnm[1], sd_cid.pnm[2], sd_cid.pnm[3], sd_cid.pnm[4], 0};
     azlog("SD Name: ", sdname);
-    
-    char sdyear[5] = "2000";
-    sdyear[2] += sd_cid.mdt_year_high;
-    sdyear[3] += sd_cid.mdt_year_low;
-    azlog("SD Date: ", (int)sd_cid.mdt_month, "/", sdyear);
-    
-    azlog("SD Serial: ", sd_cid.psn);
+    azlog("SD Date: ", (int)sd_cid.mdtMonth(), "/", sd_cid.mdtYear());
+    azlog("SD Serial: ", sd_cid.psn());
   }
 }
 
@@ -227,8 +224,8 @@ bool findHDDImages()
         {
           const char *archive_exts[] = {
             ".tar", ".tgz", ".gz", ".bz2", ".tbz2", ".xz", ".zst", ".z",
-            ".zip", ".zipx", ".rar", ".lzh", ".7z", ".s7z", ".arj",
-            ".dmg",
+            ".zip", ".zipx", ".rar", ".lzh", ".lha", ".lzo", ".lz4", ".arj",
+            ".dmg", ".hqx", ".cpt", ".7z", ".s7z",
             NULL
           };
 
@@ -245,6 +242,18 @@ bool findHDDImages()
         if (is_compressed)
         {
           azlog("-- Ignoring compressed file ", name);
+          continue;
+        }
+
+        // Check if the image should be loaded to microcontroller flash ROM drive
+        bool is_romdrive = false;
+        if (extension && strcasecmp(extension, ".rom") == 0)
+        {
+          is_romdrive = true;
+        }
+        else if (extension && strcasecmp(extension, ".rom_loaded") == 0)
+        {
+          // Already loaded ROM drive, ignore the image
           continue;
         }
 
@@ -302,25 +311,34 @@ bool findHDDImages()
         strcat(fullname, name);
 
         // Check whether this SCSI ID has been configured yet
-        const S2S_TargetCfg* cfg = s2s_getConfigByIndex(id);
-        if (cfg && (cfg->scsiId & S2S_CFG_TARGET_ENABLED))
+        if (s2s_getConfigById(id))
         {
           azlog("-- Ignoring ", fullname, ", SCSI ID ", id, " is already in use!");
           continue;
         }
 
-        // Open the image file
-        if(id < NUM_SCSIID && lun < NUM_SCSILUN) {
-          azlog("-- Opening ", fullname, " for id:", id, " lun:", lun);
+        // Type mapping based on filename.
+        // If type is FIXED, the type can still be overridden in .ini file.
+        S2S_CFG_TYPE type = S2S_CFG_FIXED;
+        if (is_cd) type = S2S_CFG_OPTICAL;
+        if (is_fd) type = S2S_CFG_FLOPPY_14MB;
+        if (is_mo) type = S2S_CFG_MO;
+        if (is_re) type = S2S_CFG_REMOVEABLE;
+        if (is_tp) type = S2S_CFG_SEQUENTIAL;
 
-          // Type mapping based on filename.
-          // If type is FIXED, the type can still be overridden in .ini file.
-          S2S_CFG_TYPE type = S2S_CFG_FIXED;
-          if (is_cd) type = S2S_CFG_OPTICAL;
-          if (is_fd) type = S2S_CFG_FLOPPY_14MB;
-          if (is_mo) type = S2S_CFG_MO;
-          if (is_re) type = S2S_CFG_REMOVEABLE;
-          if (is_tp) type = S2S_CFG_SEQUENTIAL;
+        // Open the image file
+        if (id < NUM_SCSIID && is_romdrive)
+        {
+          azlog("-- Loading ROM drive from ", fullname, " for id:", id);
+          imageReady = scsiDiskProgramRomDrive(fullname, id, blk, type);
+          
+          if (imageReady)
+          {
+            foundImage = true;
+          }
+        }
+        else if(id < NUM_SCSIID && lun < NUM_SCSILUN) {
+          azlog("-- Opening ", fullname, " for id:", id, " lun:", lun);
 
           imageReady = scsiDiskOpenHDDImage(id, fullname, id, lun, blk, type);
           if(imageReady)
@@ -342,6 +360,8 @@ bool findHDDImages()
     azlog("Some images did not specify a SCSI ID. Last file will be used at ID ", usedDefaultId);
   }
   root.close();
+
+  g_romdrive_active = scsiDiskActivateRomDrive();
 
   // Print SCSI drive map
   for (int i = 0; i < NUM_SCSIID; i++)
@@ -379,6 +399,24 @@ void readSCSIDeviceConfig()
 /*********************************/
 /* Main SCSI handling loop       */
 /*********************************/
+
+static bool mountSDCard()
+{
+  // Check for the common case, FAT filesystem as first partition
+  if (SD.begin(SD_CONFIG))
+    return true;
+
+  // Do we have any kind of card?
+  if (!SD.card() || SD.sdErrorCode() != 0)
+    return false;
+
+  // Try to mount the whole card as FAT (without partition table)
+  if (static_cast<FsVolume*>(&SD)->begin(SD.card(), true, 0))
+    return true;
+
+  // Failed to mount FAT filesystem, but card can still be accessed as raw image
+  return true;
+}
 
 static void reinitSCSI()
 {
@@ -435,34 +473,57 @@ extern "C" void zuluscsi_setup(void)
   azplatform_init();
   azplatform_late_init();
 
-  if(!SD.begin(SD_CONFIG) && (!SD.card() || SD.sdErrorCode() != 0))
+  g_sdcard_present = mountSDCard();
+
+  if(!g_sdcard_present)
   {
     azlog("SD card init failed, sdErrorCode: ", (int)SD.sdErrorCode(),
            " sdErrorData: ", (int)SD.sdErrorData());
     
+    blinkStatus(BLINK_ERROR_NO_SD_CARD);
+
+    if (scsiDiskCheckRomDrive())
+    {
+      reinitSCSI();
+      if (g_romdrive_active)
+      {
+        azlog("Enabled ROM drive without SD card");
+        return;
+      }
+    }
+
     do
     {
       blinkStatus(BLINK_ERROR_NO_SD_CARD);
       delay(1000);
       azplatform_reset_watchdog();
-    } while (!SD.begin(SD_CONFIG) && (!SD.card() || SD.sdErrorCode() != 0));
+      g_sdcard_present = mountSDCard();
+    } while (!g_sdcard_present);
     azlog("SD card init succeeded after retry");
   }
 
-  if (SD.clusterCount() == 0)
+  if (g_sdcard_present)
   {
-    azlog("SD card without filesystem!");
+    if (SD.clusterCount() == 0)
+    {
+      azlog("SD card without filesystem!");
+    }
+
+    print_sd_info();
+  
+    reinitSCSI();
   }
 
-  print_sd_info();
-  
-  reinitSCSI();
-
   azlog("Initialization complete!");
-  azlog("Platform: ", g_azplatform_name);
-  azlog("FW Version: ", g_azlog_firmwareversion);
 
-  init_logfile();
+  if (g_sdcard_present)
+  {
+    init_logfile();
+    if (ini_getbool("SCSI", "DisableStatusLED", false, CONFIGFILE))
+    {
+      azplatform_disable_led();
+    }
+  }
 }
 
 extern "C" void zuluscsi_main_loop(void)
@@ -491,29 +552,50 @@ extern "C" void zuluscsi_main_loop(void)
     }
   }
 
-  // Check SD card status for hotplug
-  if (scsiDev.phase == BUS_FREE &&
-      (uint32_t)(millis() - sd_card_check_time) > 5000)
+  if (g_sdcard_present)
   {
-    sd_card_check_time = millis();
-    uint32_t ocr;
-    if (!SD.card()->readOCR(&ocr))
+    // Check SD card status for hotplug
+    if (scsiDev.phase == BUS_FREE &&
+        (uint32_t)(millis() - sd_card_check_time) > 5000)
     {
+      sd_card_check_time = millis();
+      uint32_t ocr;
       if (!SD.card()->readOCR(&ocr))
       {
-        azlog("SD card removed, trying to reinit");
-        do
+        if (!SD.card()->readOCR(&ocr))
         {
-          blinkStatus(BLINK_ERROR_NO_SD_CARD);
-          delay(1000);
-          azplatform_reset_watchdog();
-        } while (!SD.begin(SD_CONFIG) && (!SD.card() || SD.sdErrorCode() != 0));
+          g_sdcard_present = false;
+          azlog("SD card removed, trying to reinit");
+        }
+      }
+    }
+  }
+
+  if (!g_sdcard_present)
+  {
+    // Try to remount SD card
+    do 
+    {
+      g_sdcard_present = mountSDCard();
+
+      if (g_sdcard_present)
+      {
         azlog("SD card reinit succeeded");
         print_sd_info();
 
         reinitSCSI();
         init_logfile();
       }
-    }
+      else if (!g_romdrive_active)
+      {
+        blinkStatus(BLINK_ERROR_NO_SD_CARD);
+        delay(1000);
+        azplatform_reset_watchdog();
+      }
+    } while (!g_sdcard_present && !g_romdrive_active);
+  }
+  else
+  {
+    
   }
 }

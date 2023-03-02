@@ -19,8 +19,8 @@
 #define SDIO_PIO pio1
 #define SDIO_CMD_SM 0
 #define SDIO_DATA_SM 1
-#define SDIO_DMA_CH 2
-#define SDIO_DMA_CHB 3
+#define SDIO_DMA_CH 4
+#define SDIO_DMA_CHB 5
 
 // Maximum number of 512 byte blocks to transfer in one request
 #define SDIO_MAX_BLOCKS 256
@@ -181,10 +181,13 @@ sdio_status_t rp2040_sdio_command_R1(uint8_t command, uint32_t arg, uint32_t *re
     {
         if ((uint32_t)(millis() - start) > 2)
         {
-            azdbg("Timeout waiting for response in rp2040_sdio_command_R1(", (int)command, "), ",
-                  "PIO PC: ", (int)pio_sm_get_pc(SDIO_PIO, SDIO_CMD_SM) - (int)g_sdio.pio_cmd_clk_offset,
-                  " RXF: ", (int)pio_sm_get_rx_fifo_level(SDIO_PIO, SDIO_CMD_SM),
-                  " TXF: ", (int)pio_sm_get_tx_fifo_level(SDIO_PIO, SDIO_CMD_SM));
+            if (command != 8) // Don't log for missing SD card
+            {
+                azdbg("Timeout waiting for response in rp2040_sdio_command_R1(", (int)command, "), ",
+                    "PIO PC: ", (int)pio_sm_get_pc(SDIO_PIO, SDIO_CMD_SM) - (int)g_sdio.pio_cmd_clk_offset,
+                    " RXF: ", (int)pio_sm_get_rx_fifo_level(SDIO_PIO, SDIO_CMD_SM),
+                    " TXF: ", (int)pio_sm_get_tx_fifo_level(SDIO_PIO, SDIO_CMD_SM));
+            }
 
             // Reset the state machine program
             pio_sm_clear_fifos(SDIO_PIO, SDIO_CMD_SM);

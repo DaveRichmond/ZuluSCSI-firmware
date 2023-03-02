@@ -203,6 +203,12 @@ void azplatform_init()
 
 void azplatform_late_init()
 {
+    azlog("Platform: ", g_azplatform_name);
+    azlog("FW Version: ", g_azlog_firmwareversion);
+    
+#ifdef ZULUSCSI_V1_0_mini
+    azlog("DIPSW3 is ON: Enabling SCSI termination");
+#else
     if (gpio_input_bit_get(DIP_PORT, DIPSW3_PIN))
     {
         azlog("DIPSW3 is ON: Enabling SCSI termination");
@@ -212,6 +218,7 @@ void azplatform_late_init()
     {
         azlog("DIPSW3 is OFF: SCSI termination disabled");
     }
+#endif // ZULUSCSI_V1_0_mini
 
     if (gpio_input_bit_get(DIP_PORT, DIPSW2_PIN))
     {
@@ -230,6 +237,12 @@ void azplatform_late_init()
     }
 
     greenpak_load_firmware();
+}
+
+void azplatform_disable_led(void)
+{   
+    gpio_init(LED_PORT, GPIO_MODE_IPU, 0, LED_PINS);
+    azlog("Disabling status LED");
 }
 
 /*****************************************/

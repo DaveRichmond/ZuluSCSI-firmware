@@ -17,6 +17,7 @@ static csd_t g_sdio_csd;
 static int g_sdio_error_line;
 static sdio_status_t g_sdio_error;
 static uint32_t g_sdio_dma_buf[128];
+static uint32_t g_sdio_sector_count;
 
 #define checkReturnOk(call) ((g_sdio_error = (call)) == SDIO_OK ? true : logSDError(__LINE__))
 static bool logSDError(int line)
@@ -86,7 +87,7 @@ bool SdioCard::begin(SdioConfig sdioConfig)
 
     if (reply != 0x1AA || status != SDIO_OK)
     {
-        azdbg("SDIO not responding to CMD8 SEND_IF_COND, status ", (int)status, " reply ", reply);
+        // azdbg("SDIO not responding to CMD8 SEND_IF_COND, status ", (int)status, " reply ", reply);
         return false;
     }
 
@@ -127,6 +128,8 @@ bool SdioCard::begin(SdioConfig sdioConfig)
         azdbg("SDIO failed to read CSD");
         return false;
     }
+
+    g_sdio_sector_count = sectorCount();
 
     // Select card
     if (!checkReturnOk(rp2040_sdio_command_R1(CMD7, g_sdio_rca, &reply)))
@@ -213,7 +216,7 @@ bool SdioCard::readStop()
 
 uint32_t SdioCard::sectorCount()
 {
-    return sdCardCapacity(&g_sdio_csd);
+    return g_sdio_csd.capacity();
 }
 
 uint32_t SdioCard::status()
@@ -292,8 +295,18 @@ bool SdioCard::writeStop()
 
 bool SdioCard::erase(uint32_t firstSector, uint32_t lastSector)
 {
+    azlog("SdioCard::erase() not implemented");
     return false;
-    // return checkReturnOk(sd_erase(firstSector * 512, lastSector * 512));
+}
+
+bool SdioCard::cardCMD6(uint32_t arg, uint8_t* status) {
+    azlog("SdioCard::cardCMD6() not implemented");
+    return false;
+}
+
+bool SdioCard::readSCR(scr_t* scr) {
+    azlog("SdioCard::readSCR() not implemented");
+    return false;
 }
 
 /* Writing and reading, with progress callback */
@@ -429,9 +442,9 @@ bool SdioCard::readSector(uint32_t sector, uint8_t* dst)
 
 bool SdioCard::readSectors(uint32_t sector, uint8_t* dst, size_t n)
 {
-    if (((uint32_t)dst & 3) != 0)
+    if (((uint32_t)dst & 3) != 0 || sector + n >= g_sdio_sector_count)
     {
-        // Unaligned read, execute sector-by-sector
+        // Unaligned read or end-of-drive read, execute sector-by-sector
         for (size_t i = 0; i < n; i++)
         {
             if (!readSector(sector + i, dst + 512 * i))

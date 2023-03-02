@@ -7,6 +7,7 @@
 #include "ZuluSCSI_log_trace.h"
 #include "ZuluSCSI_config.h"
 #include "scsi_accel_rp2040.h"
+#include "hardware/structs/iobank0.h"
 
 #include <scsi2sd.h>
 extern "C" {
@@ -187,13 +188,13 @@ extern "C" uint32_t scsiEnterPhaseImmediate(int phase)
         scsiLogPhaseChange(phase);
 
         // Select between synchronous vs. asynchronous SCSI writes
-        if (g_scsi_phase == DATA_IN && scsiDev.target->syncOffset > 0)
+        if (scsiDev.target->syncOffset > 0 && (g_scsi_phase == DATA_IN || g_scsi_phase == DATA_OUT))
         {
-            scsi_accel_rp2040_setWriteMode(scsiDev.target->syncOffset, scsiDev.target->syncPeriod);
+            scsi_accel_rp2040_setSyncMode(scsiDev.target->syncOffset, scsiDev.target->syncPeriod);
         }
         else
         {
-            scsi_accel_rp2040_setWriteMode(0, 0);
+            scsi_accel_rp2040_setSyncMode(0, 0);
         }
 
         if (phase < 0)
@@ -204,9 +205,20 @@ extern "C" uint32_t scsiEnterPhaseImmediate(int phase)
         }
         else
         {
-            SCSI_OUT(MSG, phase & __scsiphase_msg);
-            SCSI_OUT(CD,  phase & __scsiphase_cd);
-            SCSI_OUT(IO,  phase & __scsiphase_io);
+            // The phase control signals should be changed close to simultaneously.
+            // The SCSI spec allows 400 ns for this, but some hosts do not seem to be that
+            // tolerant. The Cortex-M0 is also quite slow in bit twiddling.
+            //
+            // To avoid unnecessary delays, precalculate an XOR mask and then apply it
+            // simultaneously to all three signals.
+            uint32_t gpio_new = 0;
+            if (!(phase & __scsiphase_msg)) { gpio_new |= (1 << SCSI_OUT_MSG); }
+            if (!(phase & __scsiphase_cd)) { gpio_new |= (1 << SCSI_OUT_CD); }
+            if (!(phase & __scsiphase_io)) { gpio_new |= (1 << SCSI_OUT_IO); }
+
+            uint32_t mask = (1 << SCSI_OUT_MSG) | (1 << SCSI_OUT_CD) | (1 << SCSI_OUT_IO);
+            uint32_t gpio_xor = (sio_hw->gpio_out ^ gpio_new) & mask;
+            sio_hw->gpio_togl = gpio_xor;
             SCSI_ENABLE_CONTROL_OUT();
 
             int delayNs = 400; // Bus settle delay
@@ -252,6 +264,15 @@ void scsiEnterBusFree(void)
     } \
   }
 
+// In synchronous mode the ACK pulse can be very short, so use edge IRQ to detect it.
+#define CHECK_EDGE(pin) \
+    ((iobank0_hw->intr[pin / 8] >> (4 * (pin % 8))) & GPIO_IRQ_EDGE_FALL)
+
+#define SCSI_WAIT_ACTIVE_EDGE(pin) \
+  if (!CHECK_EDGE(SCSI_IN_ ## pin)) { \
+    while(!SCSI_IN(pin) && !CHECK_EDGE(SCSI_IN_ ## pin) && !scsiDev.resetFlag); \
+  }
+
 #define SCSI_WAIT_INACTIVE(pin) \
   if (SCSI_IN(pin)) { \
     if (SCSI_IN(pin)) { \
@@ -260,12 +281,14 @@ void scsiEnterBusFree(void)
   }
 
 // Write one byte to SCSI host using the handshake mechanism
+// This is suitable for both asynchronous and synchronous communication.
 static inline void scsiWriteOneByte(uint8_t value)
 {
     SCSI_OUT_DATA(value);
     delay_100ns(); // DB setup time before REQ
+    gpio_acknowledge_irq(SCSI_IN_ACK, GPIO_IRQ_EDGE_FALL);
     SCSI_OUT(REQ, 1);
-    SCSI_WAIT_ACTIVE(ACK);
+    SCSI_WAIT_ACTIVE_EDGE(ACK);
     SCSI_RELEASE_DATA_REQ();
     SCSI_WAIT_INACTIVE(ACK);
 }
@@ -285,22 +308,7 @@ extern "C" void scsiWrite(const uint8_t* data, uint32_t count)
 extern "C" void scsiStartWrite(const uint8_t* data, uint32_t count)
 {
     scsiLogDataIn(data, count);
-
-    if ((count & 1) != 0 || ((uint32_t)data & 1) != 0)
-    {
-        // Unaligned write, do it byte-by-byte
-        scsiFinishWrite();
-        for (uint32_t i = 0; i < count; i++)
-        {
-            if (scsiDev.resetFlag) break;
-            scsiWriteOneByte(data[i]);
-        }
-    }
-    else
-    {
-        // Use accelerated routine
-        scsi_accel_rp2040_startWrite(data, count, &scsiDev.resetFlag);
-    }
+    scsi_accel_rp2040_startWrite(data, count, &scsiDev.resetFlag);
 }
 
 extern "C" bool scsiIsWriteFinished(const uint8_t *data)
@@ -346,21 +354,26 @@ extern "C" uint8_t scsiReadByte(void)
 extern "C" void scsiRead(uint8_t* data, uint32_t count, int* parityError)
 {
     *parityError = 0;
+    if (!(scsiDev.boardCfg.flags & S2S_CFG_ENABLE_PARITY)) { parityError = NULL; }
 
-    if ((count & 1) != 0 || ((uint32_t)data & 1) != 0)
-    {
-        // Unaligned transfer, do byte by byte
-        for (uint32_t i = 0; i < count; i++)
-        {
-            if (scsiDev.resetFlag) break;
-            data[i] = scsiReadOneByte(parityError);
-        }
-    }
-    else
-    {
-        // Use accelerated routine
-        scsi_accel_rp2040_read(data, count, parityError, &scsiDev.resetFlag);
-    }
+    scsiStartRead(data, count, parityError);
+    scsiFinishRead(data, count, parityError);
+}
 
+extern "C" void scsiStartRead(uint8_t* data, uint32_t count, int *parityError)
+{
+    if (!(scsiDev.boardCfg.flags & S2S_CFG_ENABLE_PARITY)) { parityError = NULL; }
+    scsi_accel_rp2040_startRead(data, count, parityError, &scsiDev.resetFlag);
+}
+
+extern "C" void scsiFinishRead(uint8_t* data, uint32_t count, int *parityError)
+{
+    if (!(scsiDev.boardCfg.flags & S2S_CFG_ENABLE_PARITY)) { parityError = NULL; }
+    scsi_accel_rp2040_finishRead(data, count, parityError, &scsiDev.resetFlag);
     scsiLogDataOut(data, count);
+}
+
+extern "C" bool scsiIsReadFinished(const uint8_t *data)
+{
+    return scsi_accel_rp2040_isReadFinished(data);
 }
