@@ -162,6 +162,11 @@ void azplatform_late_init()
     g_azlog_debug = false; // debug off for now, to avoid being slowed down by uart polling
 }
 
+void azplatform_disable_led(void)
+{   
+    gpio_init(LED_PORT, GPIO_MODE_IPU, 0, LED_PIN);
+    azlog("Disabling status LED");
+}
 
 /*
  * Crash Handler
