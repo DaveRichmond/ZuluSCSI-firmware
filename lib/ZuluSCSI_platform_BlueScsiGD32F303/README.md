@@ -1,57 +1,38 @@
-Porting ZuluSCSI firmware to new platforms
+ZuluSCSI on BlueSCSI with Bluepill+ GD32F303 
 ==========================================
 
-The ZuluSCSI firmware is designed to be portable to a wide variety of platforms.
-This directory contains an example platform definition that can serve as a base for
-porting efforts.
+This specific port is related to using a BlueSCSI interposer board
+with WeACT studio's Bluepill+ boards. Specifically the GD32F303 variant
 
-Creating a new platform definition
+BlueSCSI Modifications required
 ----------------------------------
 
-The bare minimum to support a new platform is to:
+An almost stock BlueSCSI board will support the Bluepill+ form factor,
+during assembly it will require using one 20 pin header and one 19 pin 
+header where the bluepill plugs in. This is because one ground pin on 
+the older bluepills is a +3.3V on the bluepill+. Cutting a 40 pin header
+in half (as you lose one pin) works out perfectly for this.
 
-1. Make a copy of the `ZuluSCSI_platform_template` folder to a new name, e.g. `ZuluSCSI_platform_MyCustomHardware`
-2. Make a copy of the `[env:template]` section to a new name, e.g. `[env:MyCustomHardware]`
-3. Edit `ZuluSCSI_platform_gpio.h` to match the pinout of your platform.
-4. Edit `ZuluSCSI_platform.h` for the hardware access functions implemented in your platform.
-5. Edit `scsiPhy.cpp` to enable the `RST` and `BSY` interrupts.
+Simply leave the one pin at the USB end of the bluepill, closest to the SCSI
+connector disconnected and the bluepill+ boards will plug in without causing 
+any issues.
 
-Required IO capabilities
-------------------------
+An example can be seen in ![This image](./build.jpg)
 
-The minimum IO capabilities for ZuluSCSI firmware are:
+Installing Firmware
+----------------------------------
 
-* Bidirectional access to SCSI data bus: `DB0`-`DB7`, `DBP`
-* Bidirectional access to SCSI signal `BSY`, with rising edge interrupt.
-* Bidirectional access to SCSI signal `RST`, with falling edge interrupt.
-* Output access to SCSI signals `REQ`, `IO`, `CD`, `MSG`
-* Input access to SCSI signals `SEL`, `ACK`, `ATN`
-* Access to SD card, using either SDIO or SPI bus.
+In order to install the firmware onto the bluepill+, an stlinkv2 (or clone) can
+be used. Simply wire up the SWD and power between the two then within VScode+PIO
+browse to the platformio tab. Expand the tasks under BlueScsiGD32F303 and select 
+"Upload". If all is working correctly, the firmware should be built and flashed
+onto the board.
 
-RAM usage
----------
+Why would I use this over BlueSCSI?
+----------------------------------
 
-By default the ZuluSCSI firmware uses large buffers for best performance.
-The total RAM usage in default configuration is about 100 kB.
-Minimum possible RAM usage is about 10 kB.
-
-To reduce the RAM usage, following settings can be given in `platformio.ini` for the platform:
-
-* `LOGBUFSIZE`: Default 16384, minimum 512 bytes
-* `PREFETCH_BUFFER_SIZE`: Default 8192, minimum 0 bytes
-* `MAX_SECTOR_SIZE`: Default 8192, minimum 512 bytes
-* `SCSI2SD_BUFFER_SIZE`: Default `MAX_SECTOR_SIZE * 8`, minimum `MAX_SECTOR_SIZE * 2`
-
-Enabling parallel transfers
----------------------------
-
-Access performance is improved a lot if SCSI access can occur in parallel with SD card access.
-To implement this, one or both of them must be able to execute transfers in background using hardware DMA.
-On most platforms this is possible for SD card access.
-The SCSI handshake mechanism is harder to implement using DMA.
-
-To implement parallelism with SD card DMA, implement `azplatform_set_sd_callback(func, buffer)`.
-It sets a callback function which should be called by the SD card driver to report how many bytes have
-been transferred to/from `buffer` so far. The SD card driver should call this function in a loop while
-it is waiting for SD card transfer to finish. The code in `ZuluSCSI_disk.cpp` will implement the callback
-that will transfer the data to SCSI bus during the wait.
+I found the compatibility between the original BlueSCSI and non-Mac hardware
+to be...errr, iffy. This firmware has worked without fault for me with Sun4M 
+and Sun4C hosts, neither of which work with BlueSCSI, terminators weren't even 
+needed. The slightly higher powered GD32F303 chip provides better support for
+the features the ZuluSCSI firmware provides.
